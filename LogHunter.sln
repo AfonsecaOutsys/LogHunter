@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36930.0 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LogHunter", "LogHunter\LogHunter.csproj", "{AE793599-46B8-41AC-8798-2653553C65E0}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AE793599-46B8-41AC-8798-2653553C65E0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AE793599-46B8-41AC-8798-2653553C65E0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AE793599-46B8-41AC-8798-2653553C65E0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AE793599-46B8-41AC-8798-2653553C65E0}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F4FE8BA9-2E0D-4170-9AF5-7048776ECD36}
+	EndGlobalSection
+EndGlobal
