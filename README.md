@@ -17,7 +17,8 @@
 
 **LogHunter** is a **console-first**, **portable**, **single-executable** workflow for scanning large log sets quickly and producing actionable outputs.
 
-It’s designed for:  
+It’s designed for:
+
 > “I have 15–20GB of logs and I need answers now.”
 
 Current focus (**Beta 0.1**): **AWS ALB logs**.
@@ -41,11 +42,100 @@ Outputs are designed to be easy to share internally: **CSV + offline HTML charts
 ## 🚀 Quick start
 
 ### 1) Requirements
+
 - **.NET SDK 8.x** (for building)
 - Windows x64
 
 > Running the published build does **not** require installing .NET (self-contained publish).
 
 ### 2) Build (developers)
+
 ```bash
 dotnet build -c Release
+```
+
+### 3) Publish (recommended for distribution)
+
+Publish as a **single, self-contained EXE**:
+
+```bash
+dotnet publish -c Release -r win-x64 --self-contained true
+```
+
+Expected output:
+
+- `bin\Release\net8.0\win-x64\publish\LogHunter.exe`
+
+> Note: ScottPlot (SkiaSharp) native dependencies are packaged into the EXE and may self-extract on first run.
+
+---
+
+## 🧰 Usage
+
+Run the tool:
+
+```bash
+LogHunter.exe
+```
+
+Optional:
+
+```bash
+LogHunter.exe --version
+```
+
+You’ll get an interactive menu (Spectre.Console) and be guided through:
+
+- selecting the log source folder
+- choosing analysis type
+- exporting results (CSV / HTML)
+
+---
+
+## 📁 Folder layout
+
+LogHunter uses a simple “single-folder workflow” and will create required directories on startup.
+
+Typical layout:
+
+- `.\input\` — place logs here (or point LogHunter to your folder)
+- `.\output\` — CSV exports, charts, summaries
+- `.\ALB\configs\` — saved ALB connection configs (if using download feature)
+
+> The tool intentionally avoids external services and generates **offline** outputs.
+
+---
+
+## 🧭 Roadmap (coming next)
+
+LogHunter is currently focused on **AWS ALB logs**, but the goal is to become a lightweight security-focused toolbox for multiple log sources.
+
+### IIS (W3C) logs — security-geared analysis
+
+- DDoS / flooding indicators (top IPs, bursts per 5-min)
+- Injection/scanning indicators (SQLi/XSS/traversal probes)
+- Status-code breakdowns + evidence exports (CSV)
+
+### OutSystems Platform logs — security event analysis
+
+- Authentication/session anomalies and suspicious access patterns
+- Quick “what changed / what spiked” summaries for triage
+
+### AbuseIPDB enrichment — malicious actor checks
+
+- Take top-IP outputs and query AbuseIPDB reputation
+- Export enriched results for investigation/escalation (score, categories, last reported, etc.)
+
+---
+
+## ⚠️ Notes / Known limitations (Beta)
+
+- Output and menu structure may change as more log sources are added.
+- Log formats must match the expected source format (ALB logs for Beta 0.1).
+- First run may be slower if native chart dependencies need to self-extract.
+
+---
+
+## 🧾 License / internal use
+
+This project is intended for internal use and rapid incident/security triage workflows.
