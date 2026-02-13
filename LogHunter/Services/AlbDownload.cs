@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.ComponentModel;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
@@ -10,55 +11,104 @@ namespace LogHunter.Services;
 
 public static class AlbDownload
 {
-    // ALB object keys typically contain: ..._YYYYMMDDTHHMMZ_...
-    // Example: ..._20230426T1215Z_...
+    // Filename contains: ..._YYYYMMDDTHHMMZ_...
+    // Example: ..._20260211T0650Z_... => interval is typically 06:45->06:50 UTC
     private static readonly Regex AlbTimestampRegex =
         new(@"_(\d{8})T(\d{4})Z_", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // AWS region near end of bucket name: ...-ap-northeast-1-alblogs
+    private static readonly Regex AwsRegionAtEndRegex =
+        new(@"(?<region>(?:af|ap|ca|eu|me|sa|us|cn)-[a-z0-9-]+-\d)$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    private static AwsCreds? _sessionCreds;
+    private static string? _awsExePathCached;
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = true
+    };
+
+    private enum AlbScope { Normal, Internal }
+
+    private sealed record AwsCreds(string AccessKeyId, string SecretAccessKey, string SessionToken);
+
+    private sealed class AlbConfig
+    {
+        public string Name { get; set; } = "";       // file name / selection label
+        public string Bucket { get; set; } = "";
+        public string AlbId { get; set; } = "";      // base id e.g. ALB226963
+        public AlbScope Scope { get; set; } = AlbScope.Normal; // Normal or Internal
+        public string AccountId { get; set; } = "";
+        public string Region { get; set; } = "";
+        public bool IsSentry { get; set; }           // standard vs sentry prefix root
+        public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
+    }
 
     public static async Task RunAsync()
     {
         AppFolders.Ensure();
+        EnsureConfigsFolder();
 
         ConsoleEx.Header("ALB - Download logs", $"Destination: {AppFolders.ALB}");
 
-        // 1) Credentials
-        AnsiConsole.MarkupLine("[grey]Paste the 3 AWS env lines (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN).[/]");
-        AnsiConsole.MarkupLine("[grey]Finish by entering an empty line.[/]");
-        AnsiConsole.WriteLine();
-
-        var pasted = ReadMultiline();
-        var creds = ParseAwsEnvVars(pasted);
-
-        if (!creds.IsValid)
+        var awsExe = ResolveAwsExePath();
+        if (string.IsNullOrWhiteSpace(awsExe))
         {
-            AnsiConsole.MarkupLine("[red]Couldn't parse credentials.[/]");
-            AnsiConsole.MarkupLine("Expected lines like:");
-            AnsiConsole.MarkupLine("  SET AWS_ACCESS_KEY_ID=...");
-            AnsiConsole.MarkupLine("  SET AWS_SECRET_ACCESS_KEY=...");
-            AnsiConsole.MarkupLine("  SET AWS_SESSION_TOKEN=...");
+            AnsiConsole.MarkupLine("[red]Couldn't find aws.exe.[/]");
+            AnsiConsole.MarkupLine("Make sure AWS CLI v2 is installed and available on PATH (try: [grey]where aws[/]).");
             ConsoleEx.Pause();
             return;
         }
 
-        // 2) Standard vs Sentry
-        var isSentry = AnsiConsole.Confirm("Is this [bold]Sentry[/] logs?", false);
+        // --- Choose config flow ---
+        AlbConfig? cfg;
 
-        // 3) Collect S3 path parts
-        var bucket = AskNonEmpty("S3 bucket (e.g. cb5c03af-...-eu-west-1-alblogs): ");
-        var albId = AskNonEmpty("ALB identifier (e.g. ALB226963): ");
-        var account = AskNonEmpty("Amazon account ID (12 digits): ");
-        var region = AskNonEmpty("Region (e.g. eu-west-1): ");
+        var mode = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("Download ALB logs: choose an option")
+                .AddChoices("New configuration", "Previously saved configuration", "Cancel"));
 
-        // 4) Timeframe (UTC) with sensible defaults
+        if (mode == "Cancel")
+            return;
+
+        if (mode == "Previously saved configuration")
+        {
+            cfg = PickExistingConfig();
+            if (cfg is null)
+            {
+                AnsiConsole.MarkupLine("[yellow]No saved configurations found (or selection cancelled).[/]");
+                ConsoleEx.Pause();
+                return;
+            }
+
+            AnsiConsole.MarkupLineInterpolated($"[grey]Using saved config:[/] [white]{Markup.Escape(cfg.Name)}[/]");
+        }
+        else
+        {
+            cfg = CreateNewConfig();
+            if (cfg is null)
+            {
+                AnsiConsole.MarkupLine("[yellow]Cancelled.[/]");
+                ConsoleEx.Pause();
+                return;
+            }
+        }
+
+        // --- Credentials: ask once per session ---
+        var creds = await GetSessionCredsAsync().ConfigureAwait(false);
+        if (creds is null)
+            return;
+
+        // --- Timeframe (UTC) ---
         var todayUtc = DateTime.UtcNow.Date;
         var startDefault = todayUtc;                           // 00:00
         var endDefault = todayUtc.AddHours(23).AddMinutes(55); // 23:55
 
-        AnsiConsole.WriteLine();
-
         DateTime startUtc, endUtc;
         try
         {
+            AnsiConsole.WriteLine();
             startUtc = SpectreDateTimePicker.PickUtc("Start (UTC)", startDefault);
             endUtc = SpectreDateTimePicker.PickUtc("End (UTC)", endDefault, minUtc: startUtc);
         }
@@ -76,244 +126,620 @@ public static class AlbDownload
             return;
         }
 
-        var prefixRoot = isSentry ? "sentry" : "standard";
+        // Persist last-used timestamp (no tokens saved)
+        try { cfg.LastUsedUtc = DateTime.UtcNow; SaveConfig(cfg); } catch { /* non-fatal */ }
 
+        // Build prefix root + ALB key (THIS IS THE IMPORTANT PART)
+        var prefixRoot = cfg.IsSentry ? "sentry" : "standard";
+        var albKey = cfg.Scope == AlbScope.Internal ? $"{cfg.AlbId}-internal" : cfg.AlbId;
 
-        // 5) Plan
-        var plan = new Table().RoundedBorder().AddColumn("Field").AddColumn("Value");
-        plan.AddRow("Bucket", bucket);
-        plan.AddRow("Prefix root", prefixRoot);
-        plan.AddRow("ALB", albId);
-        plan.AddRow("Account", account);
-        plan.AddRow("Region", region);
+        // --- Plan ---
+        AnsiConsole.WriteLine();
+        var plan = new Table().RoundedBorder().Title("[grey]Download plan[/]")
+            .AddColumn("Field").AddColumn("Value");
+
+        plan.AddRow("aws.exe", Markup.Escape(awsExe));
+        plan.AddRow("Config", Markup.Escape(cfg.Name));
+        plan.AddRow("Bucket", Markup.Escape(cfg.Bucket));
+        plan.AddRow("Prefix root", Markup.Escape(prefixRoot));
+        plan.AddRow("ALB key", Markup.Escape(albKey));
+        plan.AddRow("Account", Markup.Escape(cfg.AccountId));
+        plan.AddRow("Region", Markup.Escape(cfg.Region));
         plan.AddRow("Start", $"{startUtc:yyyy-MM-dd HH:mm} UTC");
         plan.AddRow("End", $"{endUtc:yyyy-MM-dd HH:mm} UTC");
-        plan.AddRow("Output", AppFolders.ALB);
+        plan.AddRow("Output", Markup.Escape(AppFolders.ALB));
 
+        AnsiConsole.Write(plan);
         AnsiConsole.WriteLine();
-        AnsiConsole.Write(new Panel(plan) { Header = new PanelHeader("Download plan"), Border = BoxBorder.Rounded });
 
-        AnsiConsole.WriteLine();
-        if (!AnsiConsole.Confirm("Proceed?", true))
+        if (!ConsoleEx.ReadYesNo("Proceed? (y/n): "))
             return;
 
-        // 6) List, filter, download, extract
+        // --- Run folder under ALB ---
+        var runFolderName = $"{cfg.Name}_{startUtc:yyyyMMdd_HHmm}Z_to_{endUtc:yyyyMMdd_HHmm}Z";
+        runFolderName = SanitizeFileName(runFolderName);
+        var runFolder = Path.Combine(AppFolders.ALB, runFolderName);
+        Directory.CreateDirectory(runFolder);
+
+        // --- Sync full days (fast) ---
         var days = EachDayUtc(startUtc.Date, endUtc.Date).ToList();
-        var keysToDownload = new List<string>();
+        var daySyncFailures = 0;
 
-        await AnsiConsole.Progress()
-            .AutoClear(false)
-            .Columns(new ProgressColumn[]
-            {
-                new TaskDescriptionColumn(),
-                new ProgressBarColumn(),
-                new PercentageColumn(),
-                new RemainingTimeColumn(),
-                new SpinnerColumn()
-            })
-            .StartAsync(async ctx =>
-            {
-                var listTask = ctx.AddTask("Listing S3 objects", maxValue: days.Count);
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[grey]Downloading full day prefixes ({days.Count} day(s)) using aws s3 sync...[/]");
+        AnsiConsole.WriteLine();
 
-                foreach (var day in days)
-                {
-                    var dayPrefix =
-                        $"{prefixRoot}/{albId}/AWSLogs/{account}/elasticloadbalancing/{region}/{day:yyyy}/{day:MM}/{day:dd}/";
-
-                    var dayKeys = await ListObjectKeysAsync(bucket, dayPrefix, creds).ConfigureAwait(false);
-
-                    var filtered = dayKeys
-                        .Select(k => new { Key = k, Ts = TryParseAlbTimestampUtc(k) })
-                        .Where(x => x.Ts.HasValue)
-                        .Where(x => x.Ts!.Value >= startUtc && x.Ts!.Value <= endUtc)
-                        .Select(x => x.Key)
-                        .ToList();
-
-                    keysToDownload.AddRange(filtered);
-
-                    listTask.Increment(1);
-                }
-
-                listTask.StopTask();
-            });
-
-        if (keysToDownload.Count == 0)
+        foreach (var day in days)
         {
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[yellow]No objects matched the selected timeframe.[/]");
+            var dayPrefix =
+                $"{prefixRoot}/{albKey}/AWSLogs/{cfg.AccountId}/elasticloadbalancing/{cfg.Region}/{day:yyyy}/{day:MM}/{day:dd}/";
+
+            var s3Uri = $"s3://{cfg.Bucket}/{dayPrefix}";
+            var title = $"Downloading day {day:yyyy-MM-dd}";
+
+            var ok = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("grey"))
+                .StartAsync(title, async _ =>
+                {
+                    return await AwsSyncPrefixAsync(
+                        awsExePath: awsExe,
+                        s3Uri: s3Uri,
+                        destFolder: runFolder,
+                        creds: creds).ConfigureAwait(false);
+                });
+
+            if (ok)
+                AnsiConsole.MarkupLine($"[green]OK[/] {day:yyyy-MM-dd}");
+            else
+            {
+                daySyncFailures++;
+                AnsiConsole.MarkupLine($"[red]FAILED[/] {day:yyyy-MM-dd}");
+            }
+        }
+
+        // Enumerate downloaded .gz
+        var allGz = Directory.Exists(runFolder)
+            ? Directory.EnumerateFiles(runFolder, "*.gz", SearchOption.AllDirectories).ToList()
+            : new List<string>();
+
+        if (allGz.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No .gz files were downloaded.[/]");
+            Console.WriteLine($"Day sync failures: {daySyncFailures}");
+            Console.WriteLine($"Folder: {runFolder}");
             ConsoleEx.Pause();
             return;
         }
 
+        // --- Prune outside timeframe (based on overlap of [stamp-5min, stamp]) ---
+        var kept = 0;
+        var deleted = 0;
+        var unknown = 0;
+
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine($"Total objects to download: [bold]{keysToDownload.Count}[/]");
+        AnsiConsole.MarkupLine($"[grey]Pruning out-of-range .gz files (downloaded: {allGz.Count})...[/]");
 
-        // Put downloads in a subfolder per run (keeps ALB tidy)
-        var runFolderName = $"ALB_{startUtc:yyyyMMdd_HHmm}Z_to_{endUtc:yyyyMMdd_HHmm}Z";
-        var runFolder = Path.Combine(AppFolders.ALB, runFolderName);
-        Directory.CreateDirectory(runFolder);
-
-        int downloaded = 0, extracted = 0, failed = 0;
-
-        await AnsiConsole.Progress()
-            .AutoClear(false)
-            .Columns(new ProgressColumn[]
+        await AnsiConsole.Status()
+            .Spinner(Spinner.Known.Dots)
+            .SpinnerStyle(Style.Parse("grey"))
+            .StartAsync("Pruning (delete outside timeframe)", async _ =>
             {
-                new TaskDescriptionColumn(),
-                new ProgressBarColumn(),
-                new PercentageColumn(),
-                new RemainingTimeColumn(),
-                new SpinnerColumn()
-            })
-            .StartAsync(async ctx =>
-            {
-                var dlTask = ctx.AddTask("Downloading + extracting", maxValue: keysToDownload.Count);
-
-                for (var i = 0; i < keysToDownload.Count; i++)
+                foreach (var gz in allGz)
                 {
-                    var key = keysToDownload[i];
-                    var fileName = Path.GetFileName(key);
-                    var localGz = Path.Combine(runFolder, fileName);
-
-                    dlTask.Description = $"Downloading: {Markup.Escape(fileName)}";
-
-                    var ok = await AwsCpAsync(bucket, key, localGz, creds).ConfigureAwait(false);
-                    if (!ok)
+                    var stamp = TryParseAlbTimestampUtc(Path.GetFileName(gz));
+                    if (!stamp.HasValue)
                     {
-                        failed++;
-                        dlTask.Increment(1);
+                        unknown++;
+                        kept++;
                         continue;
                     }
 
-                    downloaded++;
+                    var intervalEnd = stamp.Value;
+                    var intervalStart = intervalEnd.AddMinutes(-5);
 
-                    if (localGz.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+                    var overlaps = intervalStart <= endUtc && intervalEnd >= startUtc;
+
+                    if (!overlaps)
                     {
                         try
                         {
-                            var localLog = localGz[..^3]; // remove ".gz"
-                            await ExtractGzipAsync(localGz, localLog).ConfigureAwait(false);
-                            File.Delete(localGz);
-                            extracted++;
+                            File.Delete(gz);
+                            deleted++;
                         }
                         catch
                         {
-                            failed++;
+                            kept++;
                         }
                     }
-
-                    dlTask.Increment(1);
+                    else
+                    {
+                        kept++;
+                    }
                 }
 
-                dlTask.StopTask();
+                await Task.CompletedTask;
             });
 
-        AnsiConsole.WriteLine();
-        var summary = new Table().RoundedBorder().AddColumn("Metric").AddColumn("Value");
-        summary.AddRow("Downloaded", downloaded.ToString());
-        summary.AddRow("Extracted", extracted.ToString());
-        summary.AddRow("Failed", failed.ToString());
-        summary.AddRow("Folder", runFolder);
+        var gzFiles = Directory.EnumerateFiles(runFolder, "*.gz", SearchOption.AllDirectories).ToList();
 
-        AnsiConsole.Write(new Panel(summary) { Header = new PanelHeader("Done"), Border = BoxBorder.Rounded });
+        if (gzFiles.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]After pruning, no .gz files remain in the selected timeframe.[/]");
+            Console.WriteLine($"Downloaded: {allGz.Count}");
+            Console.WriteLine($"Deleted:    {deleted}");
+            Console.WriteLine($"Unknown ts: {unknown} (kept)");
+            Console.WriteLine($"Folder:     {runFolder}");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        // --- Extract after all downloads ---
+        var extracted = 0;
+        var extractFailed = 0;
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[grey]Extracting {gzFiles.Count} file(s)...[/]");
+
+        await AnsiConsole.Status()
+            .Spinner(Spinner.Known.Dots)
+            .SpinnerStyle(Style.Parse("grey"))
+            .StartAsync("Extracting .gz -> .log", async _ =>
+            {
+                foreach (var gzPath in gzFiles)
+                {
+                    try
+                    {
+                        var outPath = gzPath[..^3]; // remove ".gz"
+                        await ExtractGzipAsync(gzPath, outPath).ConfigureAwait(false);
+                        File.Delete(gzPath);
+                        extracted++;
+                    }
+                    catch
+                    {
+                        extractFailed++;
+                    }
+                }
+            });
+
+        Console.WriteLine();
+        Console.WriteLine("Done.");
+        Console.WriteLine($"  Config name:          {cfg.Name}");
+        Console.WriteLine($"  Prefix root:          {prefixRoot}");
+        Console.WriteLine($"  ALB key:              {albKey}");
+        Console.WriteLine($"  Days requested:       {days.Count}");
+        Console.WriteLine($"  Day sync failures:    {daySyncFailures}");
+        Console.WriteLine($"  Downloaded (.gz):     {allGz.Count}");
+        Console.WriteLine($"  Pruned (deleted):     {deleted}");
+        Console.WriteLine($"  Unknown timestamp:    {unknown} (kept)");
+        Console.WriteLine($"  Kept for extraction:  {gzFiles.Count}");
+        Console.WriteLine($"  Extracted (.log):     {extracted}");
+        Console.WriteLine($"  Extract failed:       {extractFailed}");
+        Console.WriteLine($"  Folder:               {runFolder}");
         ConsoleEx.Pause();
     }
 
-    // ---------- Spectre prompts ----------
+    // =========================
+    // Config Flow
+    // =========================
 
-    private static string AskNonEmpty(string label)
+    private static void EnsureConfigsFolder()
+        => Directory.CreateDirectory(GetConfigsFolder());
+
+    private static string GetConfigsFolder()
+        => Path.Combine(AppFolders.ALB, "configs");
+
+    private static AlbConfig? PickExistingConfig()
     {
-        return AnsiConsole.Prompt(
-            new TextPrompt<string>(Markup.Escape(label))
-                .AllowEmpty()
-                .Validate(s => string.IsNullOrWhiteSpace(s)
-                    ? ValidationResult.Error("Value cannot be empty.")
-                    : ValidationResult.Success())
-        ).Trim();
-    }
+        EnsureConfigsFolder();
 
-    private static DateTime AskUtcDateTime5Min(string label, DateTime defaultUtc, DateTime? minUtc = null)
-    {
-        // Date
-        var date = AnsiConsole.Prompt(
-            new TextPrompt<string>($"{Markup.Escape(label)} date (YYYY-MM-DD)")
-                .DefaultValue(defaultUtc.ToString("yyyy-MM-dd"))
-                .Validate(s => DateTime.TryParseExact(s, "yyyy-MM-dd", null,
-                        System.Globalization.DateTimeStyles.None, out _)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("Invalid date. Expected YYYY-MM-DD."))
-        );
+        var files = Directory.EnumerateFiles(GetConfigsFolder(), "*.json", SearchOption.TopDirectoryOnly)
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .ToList();
 
-        // Time (5-min increments)
-        var times = Build5MinTimes();
-        var defaultTime = defaultUtc.ToString("HH:mm");
+        if (files.Count == 0)
+            return null;
 
-        var time = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title($"{Markup.Escape(label)} time (UTC)")
-                .PageSize(12)
-                .MoreChoicesText("[grey](Move up/down to see more)[/]")
-                .HighlightStyle(new Style(foreground: Color.Cyan1))
-                .AddChoices(times)
-        );
-
-        // If user didn’t scroll, it won’t auto default; we can make it default-ish by placing it first
-        // But Spectre SelectionPrompt doesn’t have a default selection in older versions.
-        // So we keep it simple: if they press Enter immediately, it selects first item.
-        // To approximate default, we rotate the list to start at defaultTime.
-        // (We do that by building times with defaultTime first)
-        // NOTE: Build5MinTimes() already handles default ordering when asked.
-        // We'll rebuild with defaultTime at top:
-        times = Build5MinTimes(defaultTime);
-        time = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title($"{Markup.Escape(label)} time (UTC)")
-                .PageSize(12)
-                .MoreChoicesText("[grey](Move up/down to see more)[/]")
-                .AddChoices(times)
-        );
-
-        if (!DateTime.TryParseExact(date, "yyyy-MM-dd", null,
-                System.Globalization.DateTimeStyles.None, out var d))
-            d = defaultUtc.Date;
-
-        var parts = time.Split(':');
-        var hh = int.Parse(parts[0]);
-        var mm = int.Parse(parts[1]);
-
-        var dt = new DateTime(d.Year, d.Month, d.Day, hh, mm, 0, DateTimeKind.Utc);
-
-        if (minUtc.HasValue && dt < minUtc.Value)
+        var configs = new List<AlbConfig>();
+        foreach (var f in files)
         {
-            AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(label)} adjusted to min: {minUtc.Value:yyyy-MM-dd HH:mm} UTC[/]");
-            return minUtc.Value;
-        }
-
-        return dt;
-    }
-
-    private static List<string> Build5MinTimes(string? preferredFirst = null)
-    {
-        var list = new List<string>(288);
-        for (int h = 0; h < 24; h++)
-            for (int m = 0; m < 60; m += 5)
-                list.Add($"{h:D2}:{m:D2}");
-
-        if (!string.IsNullOrWhiteSpace(preferredFirst) && list.Contains(preferredFirst))
-        {
-            // rotate so preferredFirst appears at the top
-            var idx = list.IndexOf(preferredFirst);
-            if (idx > 0)
+            try
             {
-                var rotated = list.Skip(idx).Concat(list.Take(idx)).ToList();
-                return rotated;
+                var json = File.ReadAllText(f, Encoding.UTF8);
+                var c = JsonSerializer.Deserialize<AlbConfig>(json, JsonOpts);
+                if (c is not null && !string.IsNullOrWhiteSpace(c.Name))
+                    configs.Add(c);
             }
+            catch { }
         }
 
-        return list;
+        if (configs.Count == 0)
+            return null;
+
+        var choice = AnsiConsole.Prompt(
+            new SelectionPrompt<AlbConfig>()
+                .Title("Select a saved configuration")
+                .PageSize(12)
+                .UseConverter(c =>
+                {
+                    var scope = c.Scope == AlbScope.Internal ? "Internal" : "Normal";
+                    var sentry = c.IsSentry ? "Sentry" : "Standard";
+                    return $"{c.Name}  |  {c.Region}  |  {scope}  |  {sentry}  |  {c.AlbId}";
+                })
+                .AddChoices(configs)
+        );
+
+        return choice;
     }
 
-    // ---------- Helpers (same core logic) ----------
+    private static AlbConfig? CreateNewConfig()
+    {
+        EnsureConfigsFolder();
+
+        // Internal vs Normal (new requirement - affects ALB key with "-internal")
+        var scopeStr = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("ALB type?")
+                .AddChoices("1 - Normal", "2 - Internal"));
+
+        var scope = scopeStr.StartsWith("2") ? AlbScope.Internal : AlbScope.Normal;
+
+        // Sentry?
+        var isSentry = ConsoleEx.ReadYesNo("Is this Sentry logs? (y/n): ");
+
+        // Inputs
+        var bucket = ConsoleEx.Prompt("S3 bucket (e.g. ...-eu-west-1-alblogs): ").Trim();
+        var albId = ConsoleEx.Prompt("ALB identifier (e.g. ALB226963): ").Trim();
+        var account = ConsoleEx.Prompt("Amazon account ID (12 digits): ").Trim();
+
+        if (string.IsNullOrWhiteSpace(bucket) ||
+            string.IsNullOrWhiteSpace(albId) ||
+            string.IsNullOrWhiteSpace(account))
+        {
+            AnsiConsole.MarkupLine("[red]Missing required inputs.[/]");
+            return null;
+        }
+
+        // Derive region from bucket
+        var derivedRegion = TryDeriveRegionFromBucket(bucket);
+        string region;
+
+        if (!string.IsNullOrWhiteSpace(derivedRegion))
+        {
+            AnsiConsole.MarkupLineInterpolated($"[grey]Derived region from bucket:[/] [white]{Markup.Escape(derivedRegion)}[/]");
+            var use = ConsoleEx.ReadYesNo("Use derived region? (y/n): ");
+            region = use ? derivedRegion! : ConsoleEx.Prompt("Region (e.g. eu-west-1): ").Trim();
+        }
+        else
+        {
+            region = ConsoleEx.Prompt("Region (e.g. eu-west-1): ").Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(region))
+        {
+            AnsiConsole.MarkupLine("[red]Region is required.[/]");
+            return null;
+        }
+
+        // Config name (default: ALB id (+ internal suffix if internal))
+        var defaultName = scope == AlbScope.Internal ? $"{albId}-internal" : albId;
+        var name = ConsoleEx.Prompt($"Config name (default: {defaultName}): ").Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            name = defaultName;
+
+        name = SanitizeFileName(name);
+
+        var cfgPath = GetConfigPath(name);
+        if (File.Exists(cfgPath))
+        {
+            AnsiConsole.MarkupLineInterpolated($"[yellow]A config named '{Markup.Escape(name)}' already exists.[/]");
+            if (!ConsoleEx.ReadYesNo("Overwrite? (y/n): ", defaultYes: false))
+                return null;
+        }
+
+        var cfg = new AlbConfig
+        {
+            Name = name,
+            Bucket = bucket,
+            AlbId = albId,
+            Scope = scope,
+            AccountId = account,
+            Region = region,
+            IsSentry = isSentry,
+            LastUsedUtc = DateTime.UtcNow
+        };
+
+        SaveConfig(cfg);
+
+        AnsiConsole.MarkupLineInterpolated($"[green]Saved config:[/] {Markup.Escape(cfg.Name)}");
+        return cfg;
+    }
+
+    private static void SaveConfig(AlbConfig cfg)
+    {
+        EnsureConfigsFolder();
+        cfg.LastUsedUtc = DateTime.UtcNow;
+        var json = JsonSerializer.Serialize(cfg, JsonOpts);
+        File.WriteAllText(GetConfigPath(cfg.Name), json, Encoding.UTF8);
+    }
+
+    private static string GetConfigPath(string name)
+        => Path.Combine(GetConfigsFolder(), $"{SanitizeFileName(name)}.json");
+
+    private static string SanitizeFileName(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "config";
+        foreach (var c in Path.GetInvalidFileNameChars())
+            s = s.Replace(c, '_');
+        return s.Trim();
+    }
+
+    private static string? TryDeriveRegionFromBucket(string bucket)
+    {
+        if (string.IsNullOrWhiteSpace(bucket)) return null;
+
+        var b = bucket.Trim();
+        if (b.EndsWith("-alblogs", StringComparison.OrdinalIgnoreCase))
+            b = b[..^"-alblogs".Length];
+
+        var m = AwsRegionAtEndRegex.Match(b);
+        if (!m.Success) return null;
+
+        return m.Groups["region"].Value;
+    }
+
+    // =========================
+    // Credentials (per session)
+    // =========================
+
+    private static async Task<AwsCreds?> GetSessionCredsAsync()
+    {
+        if (_sessionCreds is not null)
+        {
+            AnsiConsole.MarkupLine("[grey]AWS session credentials already set for this run.[/]");
+            if (ConsoleEx.ReadYesNo("Reuse them? (y/n): ", defaultYes: true))
+                return _sessionCreds;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("Paste the 3 AWS env lines (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN).");
+        Console.WriteLine("Finish by entering an empty line.");
+        Console.WriteLine();
+
+        var pasted = ReadMultiline();
+        var parsed = ParseAwsEnvVars(pasted);
+
+        if (!parsed.IsValid ||
+            string.IsNullOrWhiteSpace(parsed.AccessKeyId) ||
+            string.IsNullOrWhiteSpace(parsed.SecretAccessKey) ||
+            string.IsNullOrWhiteSpace(parsed.SessionToken))
+        {
+            Console.WriteLine();
+            Console.WriteLine("Couldn't parse credentials. Expected lines like:");
+            Console.WriteLine("  SET AWS_ACCESS_KEY_ID=...");
+            Console.WriteLine("  SET AWS_SECRET_ACCESS_KEY=...");
+            Console.WriteLine("  SET AWS_SESSION_TOKEN=...");
+            Console.WriteLine();
+            ConsoleEx.Pause();
+            return null;
+        }
+
+        _sessionCreds = new AwsCreds(parsed.AccessKeyId!, parsed.SecretAccessKey!, parsed.SessionToken!);
+        await Task.CompletedTask;
+        return _sessionCreds;
+    }
+
+    // =========================
+    // AWS Execution (fast path)
+    // =========================
+
+    private static bool AwsExists(string path)
+        => !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+
+    private static string? ResolveAwsExePath()
+    {
+        if (!string.IsNullOrWhiteSpace(_awsExePathCached))
+        {
+            if (_awsExePathCached == "aws") return _awsExePathCached;
+            if (AwsExists(_awsExePathCached)) return _awsExePathCached;
+        }
+
+        // 1) Try "aws" from PATH
+        if (CanStartAwsFromPath())
+        {
+            _awsExePathCached = "aws";
+            return _awsExePathCached;
+        }
+
+        // 2) where aws
+        var fromWhere = TryGetAwsFromWhere();
+        if (AwsExists(fromWhere))
+        {
+            _awsExePathCached = fromWhere;
+            return _awsExePathCached;
+        }
+
+        // 3) common paths
+        var p1 = @"C:\Program Files\Amazon\AWSCLIV2\aws.exe";
+        if (AwsExists(p1)) { _awsExePathCached = p1; return _awsExePathCached; }
+
+        var p2 = @"C:\Program Files (x86)\Amazon\AWSCLIV2\aws.exe";
+        if (AwsExists(p2)) { _awsExePathCached = p2; return _awsExePathCached; }
+
+        return null;
+    }
+
+    private static bool CanStartAwsFromPath()
+    {
+        try
+        {
+            using var p = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "aws",
+                    Arguments = "--version",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Directory.GetCurrentDirectory()
+                }
+            };
+
+            p.Start();
+            p.WaitForExit(3000);
+            return p.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? TryGetAwsFromWhere()
+    {
+        try
+        {
+            using var p = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "where",
+                    Arguments = "aws",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Directory.GetCurrentDirectory()
+                }
+            };
+
+            p.Start();
+            var stdout = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(3000);
+
+            if (p.ExitCode != 0) return null;
+
+            foreach (var line in stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var trimmed = line.Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
+                    return trimmed;
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<bool> AwsSyncPrefixAsync(
+        string awsExePath,
+        string s3Uri,
+        string destFolder,
+        AwsCreds creds)
+    {
+        Directory.CreateDirectory(destFolder);
+
+        // Quiet + fast
+        var args =
+            $"s3 sync \"{s3Uri}\" \"{destFolder}\" --exclude \"*\" --include \"*.gz\" --no-progress --only-show-errors";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = awsExePath,
+            Arguments = args,
+            UseShellExecute = false,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Directory.GetCurrentDirectory()
+        };
+
+        psi.Environment["AWS_ACCESS_KEY_ID"] = creds.AccessKeyId;
+        psi.Environment["AWS_SECRET_ACCESS_KEY"] = creds.SecretAccessKey;
+        psi.Environment["AWS_SESSION_TOKEN"] = creds.SessionToken;
+        psi.Environment["AWS_PAGER"] = "";
+        psi.Environment["AWS_EC2_METADATA_DISABLED"] = "true";
+
+        try
+        {
+            using var proc = new Process { StartInfo = psi };
+            proc.Start();
+            await proc.WaitForExitAsync().ConfigureAwait(false);
+
+            if (proc.ExitCode == 0)
+                return true;
+
+            // If it failed, rerun capturing stderr for visibility
+            var (ok2, _, err2) = await RunAwsCapturedAsync(awsExePath, args, creds).ConfigureAwait(false);
+            if (!ok2 && !string.IsNullOrWhiteSpace(err2))
+                AnsiConsole.MarkupLineInterpolated($"[red]aws sync error:[/] {new Markup(Markup.Escape(err2.Trim()))}");
+
+            return false;
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 2)
+        {
+            AnsiConsole.MarkupLine("[red]aws.exe not found when starting process.[/]");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[red]Failed to run aws sync:[/] {new Markup(Markup.Escape(ex.Message))}");
+            return false;
+        }
+    }
+
+    private static async Task<(bool Ok, string StdOut, string StdErr)> RunAwsCapturedAsync(
+        string awsExePath,
+        string arguments,
+        AwsCreds creds)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = awsExePath,
+            Arguments = arguments,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = Directory.GetCurrentDirectory()
+        };
+
+        psi.Environment["AWS_ACCESS_KEY_ID"] = creds.AccessKeyId;
+        psi.Environment["AWS_SECRET_ACCESS_KEY"] = creds.SecretAccessKey;
+        psi.Environment["AWS_SESSION_TOKEN"] = creds.SessionToken;
+        psi.Environment["AWS_PAGER"] = "";
+        psi.Environment["AWS_EC2_METADATA_DISABLED"] = "true";
+
+        using var proc = new Process { StartInfo = psi };
+
+        try
+        {
+            proc.Start();
+
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+
+            await proc.WaitForExitAsync().ConfigureAwait(false);
+
+            var stdout = await stdoutTask.ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+
+            return (proc.ExitCode == 0, stdout, stderr);
+        }
+        catch (Exception ex)
+        {
+            return (false, "", ex.Message);
+        }
+    }
+
+    // =========================
+    // Helpers
+    // =========================
 
     private static IEnumerable<DateTime> EachDayUtc(DateTime startDateUtc, DateTime endDateUtc)
     {
@@ -321,9 +747,9 @@ public static class AlbDownload
             yield return DateTime.SpecifyKind(d, DateTimeKind.Utc);
     }
 
-    private static DateTime? TryParseAlbTimestampUtc(string s3Key)
+    private static DateTime? TryParseAlbTimestampUtc(string fileNameOrKey)
     {
-        var m = AlbTimestampRegex.Match(s3Key);
+        var m = AlbTimestampRegex.Match(fileNameOrKey);
         if (!m.Success) return null;
 
         var ymd = m.Groups[1].Value;  // YYYYMMDD
@@ -377,121 +803,6 @@ public static class AlbDownload
                 !string.IsNullOrWhiteSpace(sk) &&
                 !string.IsNullOrWhiteSpace(st),
             ak, sk, st);
-    }
-
-    private static async Task<List<string>> ListObjectKeysAsync(
-        string bucket,
-        string prefix,
-        (bool IsValid, string? AccessKeyId, string? SecretAccessKey, string? SessionToken) creds)
-    {
-        var keys = new List<string>();
-        string? token = null;
-
-        while (true)
-        {
-            var args = new StringBuilder();
-            args.Append("s3api list-objects-v2 ");
-            args.Append($"--bucket \"{bucket}\" ");
-            args.Append($"--prefix \"{prefix}\" ");
-            args.Append("--max-items 1000 ");
-            args.Append("--output json ");
-
-            if (!string.IsNullOrWhiteSpace(token))
-                args.Append($"--starting-token \"{token}\" ");
-
-            var (ok, stdout, stderr) = await RunAwsAsync(args.ToString(), creds).ConfigureAwait(false);
-            if (!ok)
-            {
-                AnsiConsole.MarkupLine($"[red]list-objects-v2 failed:[/] {Markup.Escape(stderr)}");
-                break;
-            }
-
-            using var doc = JsonDocument.Parse(stdout);
-            if (doc.RootElement.TryGetProperty("Contents", out var contents) &&
-                contents.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in contents.EnumerateArray())
-                {
-                    if (item.TryGetProperty("Key", out var keyProp))
-                    {
-                        var k = keyProp.GetString();
-                        if (!string.IsNullOrWhiteSpace(k))
-                            keys.Add(k);
-                    }
-                }
-            }
-
-            token = null;
-            if (doc.RootElement.TryGetProperty("NextToken", out var nextTokenProp) &&
-                nextTokenProp.ValueKind == JsonValueKind.String)
-            {
-                token = nextTokenProp.GetString();
-            }
-
-            if (string.IsNullOrWhiteSpace(token))
-                break;
-        }
-
-        return keys;
-    }
-
-    private static async Task<bool> AwsCpAsync(
-        string bucket,
-        string key,
-        string destPath,
-        (bool IsValid, string? AccessKeyId, string? SecretAccessKey, string? SessionToken) creds)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-
-        var s3Uri = $"s3://{bucket}/{key}";
-        var args = $"s3 cp \"{s3Uri}\" \"{destPath}\"";
-
-        var (ok, _, stderr) = await RunAwsAsync(args, creds).ConfigureAwait(false);
-        if (!ok)
-            AnsiConsole.MarkupLine($"[red]aws cp failed:[/] {Markup.Escape(stderr)}");
-
-        return ok;
-    }
-
-    private static async Task<(bool Ok, string StdOut, string StdErr)> RunAwsAsync(
-        string arguments,
-        (bool IsValid, string? AccessKeyId, string? SecretAccessKey, string? SessionToken) creds)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "aws",
-            Arguments = arguments,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        psi.Environment["AWS_ACCESS_KEY_ID"] = creds.AccessKeyId!;
-        psi.Environment["AWS_SECRET_ACCESS_KEY"] = creds.SecretAccessKey!;
-        psi.Environment["AWS_SESSION_TOKEN"] = creds.SessionToken!;
-        psi.Environment["AWS_PAGER"] = "";
-
-        using var proc = new Process { StartInfo = psi };
-
-        try
-        {
-            proc.Start();
-
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-            var stderrTask = proc.StandardError.ReadToEndAsync();
-
-            await proc.WaitForExitAsync().ConfigureAwait(false);
-
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-
-            return (proc.ExitCode == 0, stdout, stderr);
-        }
-        catch (Exception ex)
-        {
-            return (false, "", ex.Message);
-        }
     }
 
     private static async Task ExtractGzipAsync(string gzPath, string outPath)
