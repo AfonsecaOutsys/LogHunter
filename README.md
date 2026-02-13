@@ -29,13 +29,14 @@ Current focus (**Beta 0.1**): **AWS ALB logs**.
 
 From AWS ALB access logs, LogHunter can generate:
 
+- **Download ALB Logs** Easy to navigate and download ALB logs, making them ready for analysis, it constructs the download from easy user input
 - **Top IPs** overall or filtered by endpoint/path fragment
 - **Top IPs by URI (no query)** to identify targeted endpoints
 - **Slowest URIs by target** (AVG duration, no query) for performance hotspots
 - **Requests-per-5-min per IP** with an **offline interactive HTML chart**
 - **WAF blocked summary + Top blocked requests**
 
-Outputs are designed to be easy to share internally: **CSV + offline HTML charts**.
+Outputs are designed to be easy to share internally, and with customers throught simple screenshots: **CSV + offline HTML charts**.
 
 ---
 
@@ -86,7 +87,7 @@ LogHunter.exe --version
 
 You’ll get an interactive menu (Spectre.Console) and be guided through:
 
-- selecting the log source folder
+- downloading alb logs
 - choosing analysis type
 - exporting results (CSV / HTML)
 
@@ -98,7 +99,7 @@ LogHunter uses a simple “single-folder workflow” and will create required di
 
 Typical layout:
 
-- `.\input\` — place logs here (or point LogHunter to your folder)
+- `.\ALB\` `.\IIS\` `.\Platform\` — place logs here
 - `.\output\` — CSV exports, charts, summaries
 - `.\ALB\configs\` — saved ALB connection configs (if using download feature)
 
@@ -112,7 +113,7 @@ LogHunter is currently focused on **AWS ALB logs**, but the goal is to become a 
 
 ### IIS (W3C) logs — security-geared analysis
 
-- DDoS / flooding indicators (top IPs, bursts per 5-min)
+- DDoS indicators (top IPs, bursts per 5-min)
 - Injection/scanning indicators (SQLi/XSS/traversal probes)
 - Status-code breakdowns + evidence exports (CSV)
 
@@ -133,6 +134,7 @@ LogHunter is currently focused on **AWS ALB logs**, but the goal is to become a 
 - Output and menu structure may change as more log sources are added.
 - Log formats must match the expected source format (ALB logs for Beta 0.1).
 - First run may be slower if native chart dependencies need to self-extract.
+- Any feedback is welcome, new use cases that you feel are pertinent to the each of the logs or during your workflows when handling incidents and is lacking can be easily added in a new version, just detail the use case and analysis/extraction intended.
 
 ---
 
