@@ -1,5 +1,6 @@
 ﻿using LogHunter.Services;
 using LogHunter.Utils;
+using Spectre.Console;
 
 namespace LogHunter.Menus;
 
@@ -17,7 +18,7 @@ public sealed class PlaceholderMenu : IMenu
     public Task<IMenu?> ShowAsync()
     {
         ConsoleEx.Header(_title, $"Workspace: {_session.Root}");
-        Console.WriteLine("Not implemented yet.");
+        AnsiConsole.MarkupLine("[yellow]Not implemented yet.[/]");
         ConsoleEx.Pause();
         return Task.FromResult<IMenu?>(new MainMenu(_session));
     }

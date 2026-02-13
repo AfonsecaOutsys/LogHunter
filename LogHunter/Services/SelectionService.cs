@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using LogHunter.Models;
+using Spectre.Console;
 
 namespace LogHunter.Services;
 
@@ -9,17 +10,35 @@ public static class SelectionService
     {
         if (saved.Count == 0)
         {
-            Console.WriteLine("(no saved selections)");
+            AnsiConsole.MarkupLine("[grey](no saved selections)[/]");
             return;
         }
 
-        Console.WriteLine($"{"SavedAt(UTC)",20}  {"Source",6}  {"Rank",4}  {"Hits",10}  {"IP",-15}  Endpoint");
-        Console.WriteLine(new string('-', 110));
+        var table = new Table().RoundedBorder();
+        table.AddColumn(new TableColumn("SavedAt (UTC)"));
+        table.AddColumn(new TableColumn("Source"));
+        table.AddColumn(new TableColumn("Rank").RightAligned());
+        table.AddColumn(new TableColumn("Hits").RightAligned());
+        table.AddColumn(new TableColumn("IP"));
+        table.AddColumn(new TableColumn("Endpoint"));
 
         foreach (var s in saved.OrderByDescending(x => x.SavedAtUtc))
         {
-            Console.WriteLine($"{s.SavedAtUtc:yyyy-MM-dd HH:mm:ss}  {s.Source,6}  {s.Rank,4}  {s.Hits,10}  {s.IP,-15}  {s.Endpoint}");
+            table.AddRow(
+                s.SavedAtUtc.ToString("yyyy-MM-dd HH:mm:ss"),
+                Markup.Escape(s.Source),
+                s.Rank.ToString(),
+                s.Hits.ToString("N0"),
+                Markup.Escape(s.IP),
+                Markup.Escape(s.Endpoint)
+            );
         }
+
+        AnsiConsole.Write(new Panel(table)
+        {
+            Header = new PanelHeader("Saved selections"),
+            Border = BoxBorder.Rounded
+        });
     }
 
     public static void ExportAll(string outputFolder, List<SavedSelection> saved)
@@ -38,12 +57,12 @@ public static class SelectionService
             w.WriteLine($"{s.SavedAtUtc:O},{s.Source},\"{endpoint}\",{s.Rank},{s.IP},{s.Hits}");
         }
 
-        Console.WriteLine($"Exported: {outFile}");
+        AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
     }
 
     public static void ClearSavedSelections(List<SavedSelection> saved)
     {
         saved.Clear();
-        Console.WriteLine("Saved selections cleared.");
+        AnsiConsole.MarkupLine("[green]Saved selections cleared.[/]");
     }
 }

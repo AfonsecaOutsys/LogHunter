@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="ScottPlot" Version="5.1.57" />
+    <PackageReference Include="Spectre.Console" Version="0.54.0" />
   </ItemGroup>
 
 </Project>

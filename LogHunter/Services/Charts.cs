@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Spectre.Console;
 
 namespace LogHunter.Services;
 
@@ -8,12 +9,37 @@ public static class Charts
 {
     /// <summary>
     /// Creates a self-contained offline interactive HTML time-series chart and opens it.
-    /// - Pan: click+drag
-    /// - Zoom: mouse wheel (zoom X)
-    /// - Tooltip: hover (nearest X)
-    /// No external files / no network.
+    /// Returns the HTML path.
     /// </summary>
     public static string SaveTimeSeriesHtmlAndOpen(
+        string outputFolder,
+        string title,
+        string yLabel,
+        List<(string SeriesName, DateTime[] TimesUtc, double[] Values)> series,
+        string filePrefix)
+    {
+        var htmlPath = SaveTimeSeriesHtml(
+            outputFolder: outputFolder,
+            title: title,
+            yLabel: yLabel,
+            series: series,
+            filePrefix: filePrefix);
+
+        var opened = TryOpen(htmlPath);
+
+        // Nice UX (safe even if Spectre is present everywhere now)
+        if (opened)
+            AnsiConsole.MarkupLine($"Chart opened: [green]{Markup.Escape(htmlPath)}[/]");
+        else
+            AnsiConsole.MarkupLine($"Chart saved (open manually): [yellow]{Markup.Escape(htmlPath)}[/]");
+
+        return htmlPath;
+    }
+
+    /// <summary>
+    /// Creates the HTML and returns the path. Does not try to open.
+    /// </summary>
+    public static string SaveTimeSeriesHtml(
         string outputFolder,
         string title,
         string yLabel,
@@ -123,7 +149,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
         }
         sb.AppendLine("];");
 
-        // JS chart (canvas render + pan/zoom + tooltip)
+        // JS chart
         sb.AppendLine(@"
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -133,7 +159,7 @@ function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.floor(rect.width * dpr);
   canvas.height = Math.floor(rect.height * dpr);
-  ctx.setTransform(dpr,0,0,dpr,0,0); // draw in CSS pixels
+  ctx.setTransform(dpr,0,0,dpr,0,0);
   draw();
 }
 window.addEventListener('resize', resizeCanvas);
@@ -159,15 +185,11 @@ SERIES.forEach((s, i) => {
 
 function fmtUtc(ms) {
   const d = new Date(ms);
-  // yyyy-mm-dd hh:mm
   const pad = n => String(n).padStart(2,'0');
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
-// view state: x range in epoch ms
 let xMin = T[0], xMax = T[T.length-1];
-
-// For tooltip
 let mouseX = null;
 let mouseY = null;
 let isDragging = false;
@@ -213,7 +235,7 @@ canvas.addEventListener('wheel', (e) => {
   const r = canvas.getBoundingClientRect();
   const x = (e.clientX - r.left);
   const t = xToTime(x, r.width);
-  const zoom = Math.exp((e.deltaY > 0 ? 1 : -1) * 0.12); // smooth
+  const zoom = Math.exp((e.deltaY > 0 ? 1 : -1) * 0.12);
   const span = (xMax - xMin) * zoom;
   const leftRatio = (t - xMin) / Math.max(1, (xMax - xMin));
   xMin = t - span * leftRatio;
@@ -228,7 +250,7 @@ canvas.addEventListener('dblclick', () => {
 });
 
 function clampX() {
-  const minSpan = 60 * 1000; // 1 minute min window
+  const minSpan = 60 * 1000;
   if ((xMax - xMin) < minSpan) {
     const mid = (xMin + xMax) / 2;
     xMin = mid - minSpan/2;
@@ -242,12 +264,8 @@ function clampX() {
   if (xMax > globalMax) xMax = globalMax;
 }
 
-function timeToX(ms, w) {
-  return (ms - xMin) / Math.max(1, (xMax - xMin)) * w;
-}
-function xToTime(x, w) {
-  return xMin + (x / Math.max(1, w)) * (xMax - xMin);
-}
+function timeToX(ms, w) { return (ms - xMin) / Math.max(1, (xMax - xMin)) * w; }
+function xToTime(x, w) { return xMin + (x / Math.max(1, w)) * (xMax - xMin); }
 
 function lowerBound(arr, x) {
   let lo = 0, hi = arr.length;
@@ -263,21 +281,17 @@ function draw() {
   const W = r.width;
   const H = r.height;
 
-  // Layout
   const padL = 64, padR = 18, padT = 14, padB = 44;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
 
-  // background
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle = '#0b0f14';
   ctx.fillRect(0,0,W,H);
 
-  // Determine visible indices
   const i0 = Math.max(0, lowerBound(T, xMin) - 1);
   const i1 = Math.min(T.length - 1, lowerBound(T, xMax) + 1);
 
-  // Y bounds from visible data
   let yMin = Infinity, yMax = -Infinity;
   for (const s of SERIES) {
     for (let i = i0; i <= i1; i++) {
@@ -289,7 +303,6 @@ function draw() {
   if (!isFinite(yMin) || !isFinite(yMax)) { yMin = 0; yMax = 1; }
   if (yMin === yMax) { yMin -= 1; yMax += 1; }
 
-  // padding on y
   const yPad = (yMax - yMin) * 0.08;
   yMin -= yPad; yMax += yPad;
 
@@ -297,7 +310,6 @@ function draw() {
     return padT + (1 - (v - yMin) / Math.max(1e-9, (yMax - yMin))) * plotH;
   }
 
-  // Grid
   ctx.strokeStyle = 'rgba(255,255,255,.08)';
   ctx.lineWidth = 1;
   const yTicks = 5;
@@ -314,7 +326,6 @@ function draw() {
     ctx.fillText(vv.toFixed(0), 8, y + 4);
   }
 
-  // X axis labels
   const xTicks = 5;
   for (let k = 0; k <= xTicks; k++) {
     const ms = xMin + (k / xTicks) * (xMax - xMin);
@@ -329,7 +340,6 @@ function draw() {
     ctx.fillText(lbl, x - tw/2, padT + plotH + 28);
   }
 
-  // Plot series lines
   SERIES.forEach((s, si) => {
     ctx.strokeStyle = colors[si % colors.length];
     ctx.lineWidth = 2;
@@ -347,19 +357,16 @@ function draw() {
     ctx.stroke();
   });
 
-  // Axes border
   ctx.strokeStyle = 'rgba(255,255,255,.22)';
   ctx.lineWidth = 1;
   ctx.strokeRect(padL, padT, plotW, plotH);
 
-  // Tooltip / crosshair
   if (mouseX != null && mouseY != null && mouseX >= padL && mouseX <= padL + plotW && mouseY >= padT && mouseY <= padT + plotH) {
     const tx = xToTime(mouseX - padL, plotW);
     let idx = lowerBound(T, tx);
     if (idx <= 0) idx = 0;
     else if (idx >= T.length) idx = T.length - 1;
     else {
-      // choose nearest
       const a = T[idx - 1], b = T[idx];
       idx = (Math.abs(tx - a) <= Math.abs(tx - b)) ? (idx - 1) : idx;
     }
@@ -373,14 +380,10 @@ function draw() {
     ctx.lineTo(cx, padT + plotH);
     ctx.stroke();
 
-    // Build tooltip text
     const lines = [];
     lines.push(fmtUtc(ms));
-    SERIES.forEach((s, si) => {
-      lines.push(`${s.name}: ${s.y[idx]}`);
-    });
+    SERIES.forEach((s, si) => { lines.push(`${s.name}: ${s.y[idx]}`); });
 
-    // Tooltip box
     ctx.font = '12px ui-sans-serif, system-ui';
     const padding = 10;
     let w = 0;
@@ -431,21 +434,24 @@ draw();
         sb.AppendLine("</script></body></html>");
 
         File.WriteAllText(htmlPath, sb.ToString(), Encoding.UTF8);
+        return htmlPath;
+    }
 
+    private static bool TryOpen(string filePath)
+    {
         try
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = htmlPath,
+                FileName = filePath,
                 UseShellExecute = true
             });
+            return true;
         }
         catch
         {
-            // ignore (user can open manually)
+            return false;
         }
-
-        return htmlPath;
     }
 
     private static string Html(string s)

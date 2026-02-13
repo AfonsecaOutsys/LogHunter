@@ -1,5 +1,6 @@
 ﻿using LogHunter.Services;
 using LogHunter.Utils;
+using Spectre.Console;
 
 namespace LogHunter.Menus;
 
@@ -13,51 +14,54 @@ public sealed class AlbMenu : IMenu
     {
         ConsoleEx.Header("ALB Menu", $"Workspace: {_session.Root}");
 
-        Console.WriteLine("  [1] (placeholder - download logs later)");
-        Console.WriteLine("  [2] Top IPs for endpoint/path fragment");
-        Console.WriteLine("  [3] Top 50 IPs overall");
-        Console.WriteLine("  [4] Top 50 IPs by URI (no query)");
-        Console.WriteLine("  [5] Requests (no query) ordered by AVG duration filtered by target");
-        Console.WriteLine("  [6] Track requests per IP per 5 minutes (chart)");
-        Console.WriteLine("  [7] WAF blocked summary + Top 50 blocked requests");
-        Console.WriteLine("  [0] Back");
-        Console.WriteLine();
+        var choice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("Select an option:")
+                .PageSize(12)
+                .AddChoices(new[]
+                {
+                    "1 - Download ALB logs",
+                    "2 - Top IPs for endpoint/path fragment",
+                    "3 - Top 50 IPs overall",
+                    "4 - Top 50 IPs by URI (no query)",
+                    "5 - Requests (no query) ordered by AVG duration filtered by target",
+                    "6 - Track requests per IP per 5 minutes (chart)",
+                    "7 - WAF blocked summary + Top 50 blocked requests",
+                    "0 - Back"
+                })
+        );
 
-        var choice = ConsoleEx.Prompt("Select: ").Trim();
-
-        switch (choice)
+        switch (choice[0])
         {
-            case "1":
-                ConsoleEx.Header("ALB - Download logs (placeholder)");
-                Console.WriteLine("Not implemented yet.");
-                ConsoleEx.Pause();
+            case '1':
+                await AlbDownload.RunAsync().ConfigureAwait(false);
                 return this;
 
-            case "2":
+            case '2':
                 await AlbOptions.TopIpsForEndpointAsync(_session.Root, _session.SavedSelections).ConfigureAwait(false);
                 return this;
 
-            case "3":
+            case '3':
                 await AlbOptions.Top50IpsOverallAsync(_session.Root).ConfigureAwait(false);
                 return this;
 
-            case "4":
+            case '4':
                 await AlbOptions.Top50IpUriNoQueryAsync(_session.Root).ConfigureAwait(false);
                 return this;
 
-            case "5":
+            case '5':
                 await AlbOptions.AvgDurationByTargetNoQueryAsync(_session.Root).ConfigureAwait(false);
                 return this;
 
-            case "6":
+            case '6':
                 await AlbOptions.TrackRequestsPerIpPer5MinAsync(_session.Root).ConfigureAwait(false);
                 return this;
 
-            case "7":
+            case '7':
                 await AlbOptions.WafBlockedSummaryAsync(_session.Root).ConfigureAwait(false);
                 return this;
 
-            case "0":
+            case '0':
                 return new MainMenu(_session);
 
             default:

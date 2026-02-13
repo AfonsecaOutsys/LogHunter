@@ -1,4 +1,5 @@
-﻿using LogHunter.Menus;
+﻿using Spectre.Console;
+using LogHunter.Menus;
 using LogHunter.Services;
 
 namespace LogHunter;
@@ -7,6 +8,8 @@ internal static class Program
 {
     private static async Task Main()
     {
+        AnsiConsole.MarkupLine("[green]Spectre OK[/]");
+
         // Create required folders in the working directory on startup
         AppFolders.Ensure();
 
