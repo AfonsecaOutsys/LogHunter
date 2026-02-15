@@ -36,13 +36,22 @@ public static class SelectionService
 
         AnsiConsole.Write(new Panel(table)
         {
-            Header = new PanelHeader("Saved selections"),
+            Header = new PanelHeader($"Saved selections ({saved.Count})"),
             Border = BoxBorder.Rounded
         });
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[dim]Tip:[/] Use [bold]Export[/] from the main menu to save these to a CSV.");
     }
 
     public static void ExportAll(string outputFolder, List<SavedSelection> saved)
     {
+        if (saved.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no saved selections to export)[/]");
+            return;
+        }
+
         Directory.CreateDirectory(outputFolder);
 
         var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -58,6 +67,7 @@ public static class SelectionService
         }
 
         AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
+        AnsiConsole.MarkupLine($"[dim]Rows:[/] {saved.Count:N0}");
     }
 
     public static void ClearSavedSelections(List<SavedSelection> saved)

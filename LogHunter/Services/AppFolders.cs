@@ -2,8 +2,8 @@
 
 public static class AppFolders
 {
-    // Working directory (where user runs the EXE from)
-    public static readonly string Base = Directory.GetCurrentDirectory();
+    // Create/read folders next to the running EXE (stable for Debug/Release/publish/single-file).
+    public static readonly string Base = Path.GetFullPath(AppContext.BaseDirectory);
 
     public static readonly string ALB = Path.Combine(Base, "ALB");
     public static readonly string IIS = Path.Combine(Base, "IIS");

@@ -42,7 +42,9 @@ public static class AlbScanner
     {
         if (!TryGetToken(line.AsSpan(), 1, out var ts)) return null;
 
-        if (DateTime.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var dt))
+        // ALB timestamps are ISO-ish with Z. We force universal.
+        if (DateTime.TryParse(ts, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt))
             return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
 
         return null;

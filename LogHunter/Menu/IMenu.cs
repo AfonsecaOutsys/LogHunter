@@ -2,5 +2,5 @@
 
 public interface IMenu
 {
-    Task<IMenu?> ShowAsync();
+    Task<IMenu?> ShowAsync(CancellationToken ct = default);
 }
