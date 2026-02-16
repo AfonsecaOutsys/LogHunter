@@ -1,9 +1,44 @@
-﻿using System.Reflection;
-using Spectre.Console;
-using LogHunter.Menus;
+﻿using LogHunter.Menus;
 using LogHunter.Services;
+using Spectre.Console;
+using System.Diagnostics;
+using System.Reflection;
+using System.Text;
+using System.IO;
 
 namespace LogHunter;
+
+sealed class BellDetectingWriter : TextWriter
+{
+    private readonly TextWriter _inner;
+    public BellDetectingWriter(TextWriter inner) => _inner = inner;
+
+    public override Encoding Encoding => _inner.Encoding;
+
+    public override void Write(char value)
+    {
+        if (value == '\a')
+            Debugger.Break();
+
+        _inner.Write(value);
+    }
+
+    public override void Write(string? value)
+    {
+        if (value != null && value.IndexOf('\a') >= 0)
+            Debugger.Break();
+
+        _inner.Write(value);
+    }
+
+    public override void WriteLine(string? value)
+    {
+        if (value != null && value.IndexOf('\a') >= 0)
+            Debugger.Break();
+
+        _inner.WriteLine(value);
+    }
+}
 
 internal static class Program
 {
@@ -59,19 +94,20 @@ internal static class Program
 
         Console.CancelKeyPress += (_, e) =>
         {
-            // Don't kill the process immediately; let the loop exit cleanly.
             e.Cancel = true;
             _ctrlCRequested = true;
         };
 
         try
         {
+            // MUST be before any AnsiConsole output
+            Console.SetOut(new BellDetectingWriter(Console.Out));
+            Console.SetError(new BellDetectingWriter(Console.Error));
+
             AnsiConsole.MarkupLine($"[bold]LogHunter[/] [dim]Beta {version}[/]");
 
             AppFolders.Ensure();
 
-            // Default workspace stays consistent with your current behavior (portable exe folder),
-            // but can be overridden with --root.
             var root = string.IsNullOrWhiteSpace(rootOverride)
                 ? AppContext.BaseDirectory
                 : Path.GetFullPath(rootOverride);
@@ -87,7 +123,6 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            // Friendly error boundary (still useful when someone runs this in a raw terminal)
             try
             {
                 AnsiConsole.MarkupLine("[red]Unhandled error[/]");

@@ -10,6 +10,7 @@ public sealed class MainMenu : IMenu
 
     public MainMenu(SessionState session) => _session = session;
 
+
     public Task<IMenu?> ShowAsync(CancellationToken ct = default)
     {
         ConsoleEx.Header("LogHunter (POC)", $"Workspace: {_session.Root}");
@@ -22,6 +23,11 @@ public sealed class MainMenu : IMenu
             new ConsoleEx.MenuItem("ALB", "AWS Application Load Balancer log tools.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem("IIS (placeholder)", "Future: IIS log analysis.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem("Platform (placeholder)", "Future: OutSystems platform log analysis.\n(Placeholder hint)"),
+
+            // NEW #4
+            new ConsoleEx.MenuItem("Check IP Report (AbuseIP)", "Query AbuseIPDB for reputation details on one or more IPs.\n(Placeholder hint)"),
+
+            // shifted down
             new ConsoleEx.MenuItem($"Show saved selections ({savedCount})", "View items saved during this session.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem($"Export ALL saved selections ({savedCount})", "Export all saved selections to CSV under /output.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem($"Clear saved selections ({savedCount})", "Clear all saved selections for this session.\n(Placeholder hint)"),
@@ -46,6 +52,10 @@ public sealed class MainMenu : IMenu
                 return Task.FromResult<IMenu?>(new PlaceholderMenu(_session, "Platform (placeholder)"));
 
             case 3:
+                // NEW
+                return Task.FromResult<IMenu?>(new AbuseIpMenu(_session));
+
+            case 4:
                 ConsoleEx.Header("Saved selections");
                 if (savedCount == 0)
                     AnsiConsole.MarkupLine("[grey](no saved selections)[/]");
@@ -55,7 +65,7 @@ public sealed class MainMenu : IMenu
                 ConsoleEx.Pause();
                 return Task.FromResult<IMenu?>(this);
 
-            case 4:
+            case 5:
                 ConsoleEx.Header("Export saved selections");
                 if (savedCount == 0)
                 {
@@ -73,7 +83,7 @@ public sealed class MainMenu : IMenu
                 ConsoleEx.Pause();
                 return Task.FromResult<IMenu?>(this);
 
-            case 5:
+            case 6:
                 ConsoleEx.Header("Clear saved selections");
                 if (savedCount == 0)
                 {
@@ -95,7 +105,7 @@ public sealed class MainMenu : IMenu
                 ConsoleEx.Pause();
                 return Task.FromResult<IMenu?>(this);
 
-            case 6:
+            case 7:
                 return Task.FromResult<IMenu?>(null);
 
             default:

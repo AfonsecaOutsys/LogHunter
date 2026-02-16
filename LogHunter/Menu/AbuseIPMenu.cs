@@ -1,0 +1,560 @@
+﻿using LogHunter.Services;
+using LogHunter.Utils;
+using Spectre.Console;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace LogHunter.Menus;
+
+public sealed class AbuseIpMenu : IMenu
+{
+    private readonly SessionState _session;
+
+    public AbuseIpMenu(SessionState session) => _session = session;
+
+    public async Task<IMenu?> ShowAsync(CancellationToken ct = default)
+    {
+        ConsoleEx.Header("AbuseIP", $"Workspace: {_session.Root}");
+
+        var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
+        var keySource = string.IsNullOrWhiteSpace(cfg.ApiKey) ? "hard-coded default" : "config override";
+
+        var items = new[]
+        {
+            new ConsoleEx.MenuItem(
+                "Check IPs from /output (CSV)",
+                $"Pick a recent CSV from /output, extract the IP column, and check selected IPs.\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
+
+            new ConsoleEx.MenuItem(
+                "Set/Update API key (writes config)",
+                $"Stores settings in: {AbuseIpDbClient.GetConfigPath(_session.Root)}"),
+
+            new ConsoleEx.MenuItem("Back", "Return to Main Menu.")
+        };
+
+        var selected = ConsoleEx.Menu("Select an option:", items, pageSize: 10);
+
+        // Esc = back
+        if (selected is null)
+            return new MainMenu(_session);
+
+        switch (selected.Value)
+        {
+            case 0:
+                await CheckFromOutputCsvAsync(ct).ConfigureAwait(false);
+                return this;
+
+            case 1:
+                await ConfigureAsync(ct).ConfigureAwait(false);
+                return this;
+
+            case 2:
+                return new MainMenu(_session);
+
+            default:
+                return this;
+        }
+    }
+
+    private async Task ConfigureAsync(CancellationToken ct)
+    {
+        ConsoleEx.Header("AbuseIP • Config", $"Workspace: {_session.Root}");
+
+        var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
+        var path = AbuseIpDbClient.GetConfigPath(_session.Root);
+
+        AnsiConsole.MarkupLine($"[dim]Config path:[/] {Markup.Escape(path)}");
+        AnsiConsole.WriteLine();
+
+        var key = AnsiConsole.Prompt(
+            new TextPrompt<string>("API key (leave empty to remove override and use hard-coded default):")
+                .AllowEmpty()
+                .Secret());
+
+        var maxAge = AnsiConsole.Prompt(
+            new TextPrompt<int>("maxAgeInDays (1-365):")
+                .DefaultValue(cfg.MaxAgeInDays)
+                .ValidationErrorMessage("Enter a number between 1 and 365.")
+                .Validate(v => v is >= 1 and <= 365));
+
+        // Avoid ConfirmationPrompt.DefaultValue() API differences across Spectre versions
+        var verbose = AnsiConsole.Confirm("Include verbose reports payload? (heavier response)", cfg.Verbose);
+
+        var updated = cfg with
+        {
+            ApiKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim(),
+            MaxAgeInDays = maxAge,
+            Verbose = verbose
+        };
+
+        AbuseIpDbClient.SaveConfig(_session.Root, updated);
+
+        AnsiConsole.MarkupLine("[green]Saved[/]");
+        ConsoleEx.Pause();
+        await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private async Task CheckFromOutputCsvAsync(CancellationToken ct)
+    {
+        ConsoleEx.Header("AbuseIP • Select CSV", $"Workspace: {_session.Root}");
+
+        var outDir = Path.Combine(_session.Root, "output");
+        if (!Directory.Exists(outDir))
+        {
+            AnsiConsole.MarkupLine($"[yellow]/output folder not found[/] at: {Markup.Escape(outDir)}");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        var files = Directory.EnumerateFiles(outDir, "*.csv", SearchOption.TopDirectoryOnly)
+            .Select(p => new FileInfo(p))
+            .OrderByDescending(f => SafeCreationUtc(f))
+            .ThenByDescending(f => f.LastWriteTimeUtc)
+            .ToList();
+
+        if (files.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no .csv files found in /output)[/]");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        // IMPORTANT: keep display line short to avoid console wrapping (wrapping can cause beeps in some hosts)
+        var choices = files
+            .Select(f => new FileChoice(
+                f.FullName,
+                BuildFileDisplay(f)))
+            .ToList();
+
+        var picked = AnsiConsole.Prompt(
+            new SelectionPrompt<FileChoice>()
+                .Title("Pick a CSV from /output (newest first):")
+                .PageSize(15)
+                .WrapAround()
+                .AddChoices(choices)
+                .UseConverter(x => x.Display));
+
+        ConsoleEx.Header("AbuseIP • Extract IPs", picked.FullPath);
+
+        if (!TryExtractIpCounts(
+                csvPath: picked.FullPath,
+                out var ipColumnName,
+                out var counts,
+                out var error))
+        {
+            AnsiConsole.MarkupLine($"[red]Failed[/]: {Markup.Escape(error)}");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"[dim]Detected IP column:[/] [bold]{Markup.Escape(ipColumnName)}[/]");
+        AnsiConsole.MarkupLine($"[dim]Unique IPs found:[/] {counts.Count}");
+        AnsiConsole.WriteLine();
+
+        RenderTopIpTable(counts, top: 50);
+
+        var topChoices = counts
+            .OrderByDescending(kvp => kvp.Value)
+            .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(400)
+            .Select(kvp => new IpChoice(kvp.Key, kvp.Value))
+            .ToList();
+
+        var selectedIps = AnsiConsole.Prompt(
+            new MultiSelectionPrompt<IpChoice>()
+                .Title("Select IPs to check (space to toggle, enter to run):")
+                .PageSize(18)
+                .WrapAround()
+                .NotRequired()
+                .InstructionsText("[grey](tip: pick from the top list above; selection list is capped to top 400 by hits)[/]")
+                .AddChoices(topChoices)
+                .UseConverter(x => $"{x.Ip} [grey]({x.Hits})[/]"));
+
+        if (selectedIps.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        // -----------------------------
+        // Quota/auth -> offer key swap (session-only or saved to config)
+        // -----------------------------
+        var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
+
+        string? sessionApiKeyOverride = null;
+        var client = new AbuseIpDbClient(_session.Root, sessionApiKeyOverride);
+
+        var results = new List<AbuseIpCheckResult>(selectedIps.Count);
+        var failures = new List<(string Ip, string Error)>();
+
+        await AnsiConsole.Progress()
+            .AutoClear(true)
+            .StartAsync(async ctx =>
+            {
+                var task = ctx.AddTask("Checking IP reputation…", maxValue: selectedIps.Count);
+
+                foreach (var ip in selectedIps.Select(x => x.Ip))
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    var done = false;
+                    while (!done)
+                    {
+                        try
+                        {
+                            var r = await client.CheckAsync(ip, cfg.MaxAgeInDays, cfg.Verbose, ct).ConfigureAwait(false);
+                            results.Add(r);
+                            done = true;
+                        }
+                        catch (AbuseIpQuotaExceededException qex)
+                        {
+                            var reset = qex.RateLimit.ResetAtUtc?.ToString("yyyy-MM-dd HH:mm:ss") + "Z";
+                            AnsiConsole.MarkupLine($"[yellow]Quota reached[/] (resets {Markup.Escape(reset ?? "unknown")}).");
+
+                            var action = AnsiConsole.Prompt(
+                                new SelectionPrompt<string>()
+                                    .Title("Switch API key?")
+                                    .AddChoices("Enter different key (this run only)", "Save different key to config", "Cancel"));
+
+                            if (action == "Cancel")
+                            {
+                                failures.Add((ip, qex.Message));
+                                done = true;
+                                break;
+                            }
+
+                            var newKey = AnsiConsole.Prompt(
+                                new TextPrompt<string>("New API key:")
+                                    .Secret()
+                                    .ValidationErrorMessage("API key cannot be empty.")
+                                    .Validate(s => !string.IsNullOrWhiteSpace(s)));
+
+                            if (action == "Save different key to config")
+                            {
+                                var updated = cfg with { ApiKey = newKey.Trim() };
+                                AbuseIpDbClient.SaveConfig(_session.Root, updated);
+                                cfg = updated;
+                                sessionApiKeyOverride = null;
+                            }
+                            else
+                            {
+                                sessionApiKeyOverride = newKey.Trim();
+                            }
+
+                            client.Dispose();
+                            client = new AbuseIpDbClient(_session.Root, sessionApiKeyOverride);
+                            // retry same IP
+                        }
+                        catch (AbuseIpAuthException aex)
+                        {
+                            AnsiConsole.MarkupLine($"[red]Auth error[/]: {Markup.Escape(aex.Message)}");
+
+                            var action = AnsiConsole.Prompt(
+                                new SelectionPrompt<string>()
+                                    .Title("Fix API key?")
+                                    .AddChoices("Enter different key (this run only)", "Save different key to config", "Skip this IP"));
+
+                            if (action == "Skip this IP")
+                            {
+                                failures.Add((ip, aex.Message));
+                                done = true;
+                                break;
+                            }
+
+                            var newKey = AnsiConsole.Prompt(
+                                new TextPrompt<string>("New API key:")
+                                    .Secret()
+                                    .ValidationErrorMessage("API key cannot be empty.")
+                                    .Validate(s => !string.IsNullOrWhiteSpace(s)));
+
+                            if (action == "Save different key to config")
+                            {
+                                var updated = cfg with { ApiKey = newKey.Trim() };
+                                AbuseIpDbClient.SaveConfig(_session.Root, updated);
+                                cfg = updated;
+                                sessionApiKeyOverride = null;
+                            }
+                            else
+                            {
+                                sessionApiKeyOverride = newKey.Trim();
+                            }
+
+                            client.Dispose();
+                            client = new AbuseIpDbClient(_session.Root, sessionApiKeyOverride);
+                            // retry same IP
+                        }
+                        catch (Exception ex)
+                        {
+                            failures.Add((ip, ex.Message));
+                            done = true;
+                        }
+                    }
+
+                    task.Increment(1);
+                }
+            });
+
+        client.Dispose();
+        // -----------------------------
+        // End section
+        // -----------------------------
+
+        ConsoleEx.Header("AbuseIP • Results", $"Checked: {results.Count}  |  Failed: {failures.Count}");
+
+        RenderResultsTable(results);
+
+        if (failures.Count > 0)
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[yellow]Failures:[/]");
+            foreach (var f in failures)
+                AnsiConsole.MarkupLine($"[grey]- {Markup.Escape(f.Ip)}:[/] {Markup.Escape(f.Error)}");
+        }
+
+        var exportPath = Path.Combine(_session.Root, "output", $"abuseipdb_checks_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv");
+        AbuseIpDbClient.ExportResultsCsv(exportPath, results);
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(exportPath)}");
+
+        ConsoleEx.Pause();
+    }
+
+    // ---- Display helpers (prevent wrapping/beeps) ----
+
+    private static string BuildFileDisplay(FileInfo f)
+    {
+        var ts = $"{SafeCreationUtc(f):yyyy-MM-dd HH:mm:ss}Z";
+        var size = $"({FormatBytes(f.Length)})";
+        var name = f.Name;
+
+        var width = GetConsoleWidthSafe();
+
+        // Reserve: "{ts} - " + " " + "{size}"
+        var reserve = ts.Length + 3 + 1 + size.Length;
+        var maxName = Math.Max(20, width - reserve);
+
+        name = TrimMiddle(name, maxName);
+
+        // Keep plain text here (no markup) to avoid weird host behavior
+        return $"{ts} - {name} {size}";
+    }
+
+    private static int GetConsoleWidthSafe()
+    {
+        try
+        {
+            var w = Console.WindowWidth;
+            return w > 0 ? w : 120;
+        }
+        catch
+        {
+            return 120;
+        }
+    }
+
+    private static string TrimMiddle(string s, int max)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length <= max) return s;
+        if (max <= 3) return s[..max];
+
+        var head = (max - 1) / 2;
+        var tail = max - head - 1;
+
+        return s[..head] + "…" + s[^tail..];
+    }
+
+    // ---- UI renderers ----
+
+    private static void RenderTopIpTable(Dictionary<string, int> counts, int top)
+    {
+        var table = new Table().RoundedBorder();
+        table.AddColumn("#");
+        table.AddColumn("IP");
+        table.AddColumn("Hits");
+
+        var ordered = counts
+            .OrderByDescending(kvp => kvp.Value)
+            .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(top)
+            .ToList();
+
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var (ip, hits) = ordered[i];
+            table.AddRow((i + 1).ToString(), ip, hits.ToString());
+        }
+
+        AnsiConsole.Write(table);
+        AnsiConsole.WriteLine();
+    }
+
+    private static void RenderResultsTable(List<AbuseIpCheckResult> results)
+    {
+        var table = new Table().RoundedBorder();
+        table.AddColumn("IP");
+        table.AddColumn("Score");
+        table.AddColumn("Reports");
+        table.AddColumn("Country");
+        table.AddColumn("Usage");
+        table.AddColumn("ISP");
+        table.AddColumn("Last Report");
+
+        foreach (var r in results.OrderByDescending(x => x.AbuseConfidenceScore).ThenByDescending(x => x.TotalReports))
+        {
+            table.AddRow(
+                r.IpAddress,
+                r.AbuseConfidenceScore.ToString(),
+                r.TotalReports.ToString(),
+                r.CountryCode ?? "",
+                Trunc(r.UsageType, 26),
+                Trunc(r.Isp, 26),
+                r.LastReportedAt?.ToString("yyyy-MM-dd") ?? "");
+        }
+
+        AnsiConsole.Write(table);
+    }
+
+    private static string Trunc(string? s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Length <= max ? s : s[..(max - 1)] + "…";
+    }
+
+    // ---- File/time helpers ----
+
+    private static DateTime SafeCreationUtc(FileInfo f)
+    {
+        try { return f.CreationTimeUtc; }
+        catch { return f.LastWriteTimeUtc; }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        var suf = new[] { "B", "KB", "MB", "GB", "TB" };
+        double b = bytes;
+        var i = 0;
+        while (b >= 1024 && i < suf.Length - 1) { b /= 1024; i++; }
+        return $"{b:0.##} {suf[i]}";
+    }
+
+    // ---- CSV/IP extraction ----
+
+    private static bool TryExtractIpCounts(
+        string csvPath,
+        out string ipColumnName,
+        out Dictionary<string, int> counts,
+        out string error)
+    {
+        ipColumnName = "";
+        counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        error = "";
+
+        try
+        {
+            using var fs = File.OpenRead(csvPath);
+            using var sr = new StreamReader(fs);
+
+            var headerLine = sr.ReadLine();
+            if (string.IsNullOrWhiteSpace(headerLine))
+            {
+                error = "CSV is empty.";
+                return false;
+            }
+
+            var delimiter = CsvLite.DetectDelimiter(headerLine);
+            var headers = CsvLite.Split(headerLine, delimiter);
+
+            var ipIndex = FindIpColumnIndex(headers);
+            if (ipIndex < 0)
+            {
+                error = $"Could not detect an IP column. Headers: {string.Join(", ", headers)}";
+                return false;
+            }
+
+            ipColumnName = headers[ipIndex];
+
+            string? line;
+            while ((line = sr.ReadLine()) is not null)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                var cols = CsvLite.Split(line, delimiter);
+                if (ipIndex >= cols.Count)
+                    continue;
+
+                var raw = cols[ipIndex];
+                var ip = NormalizeIp(raw);
+                if (ip is null)
+                    continue;
+
+                counts.TryGetValue(ip, out var cur);
+                counts[ip] = cur + 1;
+            }
+
+            if (counts.Count == 0)
+            {
+                error = $"Detected IP column '{ipColumnName}', but no valid IPs were found in that column.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static int FindIpColumnIndex(IReadOnlyList<string> headers)
+    {
+        var preferred = new[]
+        {
+            "ip", "ipaddress", "ip_address", "clientip", "client_ip", "client ip", "sourceip", "source_ip", "source ip"
+        };
+
+        for (var i = 0; i < headers.Count; i++)
+        {
+            var h = headers[i].Trim().ToLowerInvariant();
+            if (preferred.Contains(h))
+                return i;
+        }
+
+        for (var i = 0; i < headers.Count; i++)
+        {
+            var h = headers[i].Trim().ToLowerInvariant();
+            if (h.Contains("ip") && !h.Contains("zip") && !h.Contains("ship"))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static string? NormalizeIp(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var s = raw.Trim().Trim('"').Trim();
+
+        // ipv4:port
+        if (s.Contains('.') && s.Count(c => c == ':') == 1)
+            s = s.Split(':', 2)[0];
+
+        // [::1]
+        if (s.StartsWith('[') && s.EndsWith(']') && s.Length > 2)
+            s = s[1..^1];
+
+        return System.Net.IPAddress.TryParse(s, out _) ? s : null;
+    }
+
+    private sealed record FileChoice(string FullPath, string Display);
+    private sealed record IpChoice(string Ip, int Hits);
+}

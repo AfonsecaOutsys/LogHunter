@@ -56,7 +56,19 @@ public static class ConsoleEx
     public static void Pause(string msg = "Press ENTER to continue...")
     {
         AnsiConsole.MarkupLine($"[grey]{Escape(msg)}[/]");
-        Console.ReadLine();
+
+        // Use Spectre input. In your Spectre version this returns ConsoleKeyInfo?
+        while (true)
+        {
+            var maybe = AnsiConsole.Console.Input.ReadKey(intercept: true);
+            if (maybe is null)
+                continue;
+
+            if (maybe.Value.Key == ConsoleKey.Enter)
+                break;
+        }
+
+        AnsiConsole.WriteLine();
     }
 
     // ---------- Cancellable line input (Esc cancels) ----------
@@ -73,7 +85,11 @@ public static class ConsoleEx
 
         while (true)
         {
-            var key = Console.ReadKey(intercept: true);
+            var maybe = AnsiConsole.Console.Input.ReadKey(intercept: true);
+            if (maybe is null)
+                continue;
+
+            var key = maybe.Value;
 
             if (key.Key == ConsoleKey.Escape)
             {
@@ -146,12 +162,15 @@ public static class ConsoleEx
 
                 while (true)
                 {
-                    var key = Console.ReadKey(intercept: true);
+                    var maybe = AnsiConsole.Console.Input.ReadKey(intercept: true);
+                    if (maybe is null)
+                        continue;
+
+                    var key = maybe.Value;
 
                     // Easter egg (Ctrl+Shift+Alt+F then G)
                     if (TryHandleEasterEgg(key))
                     {
-                        // redraw menu after returning
                         ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
                         ctx.Refresh();
                         continue;
@@ -244,10 +263,13 @@ public static class ConsoleEx
             left.AddRow($"{prefix}{idx}.", label);
         }
 
-        // Right side: hint box (option A: fixed-ish width so it stays on the right)
+        // Right side: hint box
         var hintText = items[selectedIndex].Hint ?? string.Empty;
 
-        int termW = Math.Max(80, AnsiConsole.Profile.Width);
+        int termW;
+        try { termW = Math.Max(80, Console.WindowWidth); }
+        catch { termW = Math.Max(80, AnsiConsole.Profile.Width); }
+
         int hintWidth = Math.Clamp(termW / 3, 38, 64);
 
         var hint = new Panel(new Markup(Escape(hintText)))
@@ -321,10 +343,6 @@ public static class ConsoleEx
         k.Modifiers.HasFlag(ConsoleModifiers.Shift) &&
         k.Modifiers.HasFlag(ConsoleModifiers.Alt);
 
-    /// <summary>
-    /// Detects Ctrl+Shift+Alt+F then G (within ~900ms) and renders the clown.
-    /// Returns true if the key was consumed.
-    /// </summary>
     private static bool TryHandleEasterEgg(ConsoleKeyInfo key, int windowMs = 900)
     {
         if (!HasAllMods(key))
@@ -392,7 +410,6 @@ public static class ConsoleEx
                 Console.Write(text);
             }
 
-            // Split lines safely (trim ONLY the first empty line from the verbatim string)
             var lines = clown.Replace("\r", "").Split('\n');
             if (lines.Length > 0 && lines[0].Length == 0)
                 lines = lines.Skip(1).ToArray();
@@ -400,14 +417,11 @@ public static class ConsoleEx
             int artHeight = lines.Length;
             int artWidth = lines.Max(l => l.Length);
 
-            // Center art block
             int startY = Math.Max(1, (h - artHeight) / 2); // leave row 0 for FILIPE
             int startX = Math.Max(0, (w - artWidth) / 2);
 
-            // Top title
             WriteCentered(0, "FILIPE");
 
-            // Draw art
             for (int i = 0; i < lines.Length; i++)
             {
                 int y = startY + i;
@@ -415,7 +429,6 @@ public static class ConsoleEx
 
                 var line = lines[i];
 
-                // If somehow wider than terminal, truncate (better than wrapping)
                 if (line.Length > w)
                     line = line[..w];
 
@@ -424,10 +437,8 @@ public static class ConsoleEx
                 Console.Write(line);
             }
 
-            // Bottom footer
             WriteCentered(h - 1, "BOOMER");
 
-            // Wait
             Console.SetCursorPosition(0, h - 1);
             Console.ReadLine();
         }
@@ -436,5 +447,4 @@ public static class ConsoleEx
             Console.CursorVisible = true;
         }
     }
-
 }
