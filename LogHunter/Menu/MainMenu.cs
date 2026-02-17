@@ -10,24 +10,20 @@ public sealed class MainMenu : IMenu
 
     public MainMenu(SessionState session) => _session = session;
 
-
     public Task<IMenu?> ShowAsync(CancellationToken ct = default)
     {
         ConsoleEx.Header("LogHunter (POC)", $"Workspace: {_session.Root}");
 
         var savedCount = _session.SavedSelections.Count;
 
-        // Hints are placeholders; you can refine them later.
         var items = new[]
         {
             new ConsoleEx.MenuItem("ALB", "AWS Application Load Balancer log tools.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("IIS (placeholder)", "Future: IIS log analysis.\n(Placeholder hint)"),
+            new ConsoleEx.MenuItem("IIS", "IIS log analysis tools.\n(Placeholder hint for now)"),
             new ConsoleEx.MenuItem("Platform (placeholder)", "Future: OutSystems platform log analysis.\n(Placeholder hint)"),
 
-            // NEW #4
             new ConsoleEx.MenuItem("Check IP Report (AbuseIP)", "Query AbuseIPDB for reputation details on one or more IPs.\n(Placeholder hint)"),
 
-            // shifted down
             new ConsoleEx.MenuItem($"Show saved selections ({savedCount})", "View items saved during this session.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem($"Export ALL saved selections ({savedCount})", "Export all saved selections to CSV under /output.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem($"Clear saved selections ({savedCount})", "Clear all saved selections for this session.\n(Placeholder hint)"),
@@ -46,13 +42,12 @@ public sealed class MainMenu : IMenu
                 return Task.FromResult<IMenu?>(new AlbMenu(_session));
 
             case 1:
-                return Task.FromResult<IMenu?>(new PlaceholderMenu(_session, "IIS (placeholder)"));
+                return Task.FromResult<IMenu?>(new IisMenu(_session));
 
             case 2:
                 return Task.FromResult<IMenu?>(new PlaceholderMenu(_session, "Platform (placeholder)"));
 
             case 3:
-                // NEW
                 return Task.FromResult<IMenu?>(new AbuseIpMenu(_session));
 
             case 4:
@@ -77,7 +72,7 @@ public sealed class MainMenu : IMenu
                 var outDir = Path.Combine(_session.Root, "output");
                 SelectionService.ExportAll(outDir, _session.SavedSelections);
 
-                AnsiConsole.MarkupLine($"[green]Export complete[/]");
+                AnsiConsole.MarkupLine("[green]Export complete[/]");
                 AnsiConsole.MarkupLine($"[dim]Output:[/] {Markup.Escape(outDir)}");
 
                 ConsoleEx.Pause();
