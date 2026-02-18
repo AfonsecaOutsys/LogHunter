@@ -1,4 +1,5 @@
-﻿using System.IO.Compression;
+﻿using System.Buffers;
+using System.IO.Compression;
 using System.Text;
 
 namespace LogHunter.Utils;
@@ -9,6 +10,10 @@ namespace LogHunter.Utils;
 /// - iterates data lines
 /// - provides TokenReader for fast token access (no Split allocations)
 /// - supports .log and .log.gz
+///
+/// PERF NOTE:
+/// TokenReader returned by ForEachDataLineAsync uses an internal reusable offsets buffer.
+/// It is safe to use inside the callback, but you should not store TokenReader for later use.
 /// </summary>
 public static class IisW3cReader
 {
@@ -30,19 +35,47 @@ public static class IisW3cReader
 
     /// <summary>
     /// Token accessor for a single log line (space-delimited W3C tokens).
-    /// Safe to pass around (stores the string line internally).
+    /// Fast path uses cached token offsets (start,len pairs) built once per line.
     /// </summary>
     public readonly struct TokenReader
     {
         private readonly string _line;
+        private readonly int[]? _offsets;   // [start0,len0,start1,len1,...]
+        private readonly int _count;
 
-        public TokenReader(string line) => _line = line;
+        // Compatibility constructor (slow path). Prefer ForEachDataLineAsync.
+        public TokenReader(string line)
+        {
+            _line = line;
+            _offsets = null;
+            _count = 0;
+        }
+
+        internal TokenReader(string line, int[] offsets, int count)
+        {
+            _line = line;
+            _offsets = offsets;
+            _count = count;
+        }
 
         public ReadOnlySpan<char> Get(int targetIndex)
         {
             if (targetIndex < 0)
                 return ReadOnlySpan<char>.Empty;
 
+            // Fast path
+            if (_offsets is not null)
+            {
+                if (targetIndex >= _count)
+                    return ReadOnlySpan<char>.Empty;
+
+                int p = targetIndex * 2;
+                int start = _offsets[p];
+                int len = _offsets[p + 1];
+                return _line.AsSpan(start, len);
+            }
+
+            // Slow fallback (kept for safety/compat)
             int idx = 0;
             int i = 0;
 
@@ -106,7 +139,7 @@ public static class IisW3cReader
                 for (int i = 0; i < fields.Length; i++)
                     idx[fields[i]] = i;
 
-                continue; // keep fields line separate; write it once on export
+                continue;
             }
 
             header.Add(line);
@@ -115,7 +148,6 @@ public static class IisW3cReader
         if (fieldsLine is null || idx is null)
             return null;
 
-        // keep output W3C-ish if headers are missing
         if (header.Count == 0)
         {
             header.Add("#Software: Microsoft Internet Information Services 10.0");
@@ -144,21 +176,81 @@ public static class IisW3cReader
         await using var stream = OpenPossiblyGz(filePath);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
 
-        string? line;
-        while ((line = await reader.ReadLineAsync()) is not null)
+        // Reused token offsets buffer for this file (start,len pairs).
+        // Start with 64 tokens worth of space (128 ints). Grow only if needed.
+        int[] offsets = ArrayPool<int>.Shared.Rent(128);
+
+        try
         {
-            ct.ThrowIfCancellationRequested();
+            string? line;
+            while ((line = await reader.ReadLineAsync()) is not null)
+            {
+                ct.ThrowIfCancellationRequested();
 
-            if (line.Length == 0) continue;
-            if (line[0] == '#') continue;
+                if (line.Length == 0) continue;
+                if (line[0] == '#') continue;
 
-            onLine(line, new TokenReader(line));
+                int count = TokenizeIntoOffsets(line, ref offsets);
+
+                onLine(line, new TokenReader(line, offsets, count));
+            }
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(offsets, clearArray: false);
+        }
+    }
+
+    private static int TokenizeIntoOffsets(string line, ref int[] offsets)
+    {
+        while (true)
+        {
+            int tokenCount = 0;
+            int i = 0;
+
+            while (i < line.Length)
+            {
+                while (i < line.Length && line[i] == ' ') i++;
+                if (i >= line.Length) break;
+
+                int start = i;
+                while (i < line.Length && line[i] != ' ') i++;
+                int len = i - start;
+
+                int p = tokenCount * 2;
+                if (p + 1 >= offsets.Length)
+                {
+                    // grow and retry
+                    var bigger = ArrayPool<int>.Shared.Rent(offsets.Length * 2);
+                    Array.Copy(offsets, bigger, offsets.Length);
+                    ArrayPool<int>.Shared.Return(offsets, clearArray: false);
+                    offsets = bigger;
+                    goto Retry;
+                }
+
+                offsets[p] = start;
+                offsets[p + 1] = len;
+                tokenCount++;
+            }
+
+            return tokenCount;
+
+        Retry:
+            continue;
         }
     }
 
     private static Stream OpenPossiblyGz(string filePath)
     {
-        var fs = File.OpenRead(filePath);
+        // Big buffer + SequentialScan makes Windows much happier on multi-GB log scans.
+        var fs = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite,
+            bufferSize: 1 << 20,
+            options: FileOptions.SequentialScan);
+
         if (filePath.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
             return new GZipStream(fs, CompressionMode.Decompress);
 

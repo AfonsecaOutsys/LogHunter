@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System.Globalization;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -165,38 +166,51 @@ public sealed class AbuseIpDbClient : IDisposable
     public static string GetConfigPath(string workspaceRoot)
         => Path.Combine(workspaceRoot, ConfigDirName, ConfigFileName);
 
+    // ---------------------------
+    // CSV export (now with ScoreBand)
+    // ---------------------------
     public static void ExportResultsCsv(string path, IEnumerable<AbuseIpCheckResult> results)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         using var sw = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-        sw.WriteLine("IpAddress,AbuseConfidenceScore,TotalReports,CountryCode,UsageType,ISP,Domain,LastReportedAt");
+        sw.WriteLine("IpAddress,AbuseConfidenceScore,ScoreBand,TotalReports,CountryCode,UsageType,ISP,Domain,LastReportedAt");
 
         foreach (var r in results)
         {
             sw.WriteLine(string.Join(",",
                 Csv(r.IpAddress),
-                r.AbuseConfidenceScore.ToString(),
-                r.TotalReports.ToString(),
+                r.AbuseConfidenceScore.ToString(CultureInfo.InvariantCulture),
+                Csv(ScoreBand(r.AbuseConfidenceScore)),
+                r.TotalReports.ToString(CultureInfo.InvariantCulture),
                 Csv(r.CountryCode),
                 Csv(r.UsageType),
                 Csv(r.Isp),
                 Csv(r.Domain),
-                Csv(r.LastReportedAt?.ToString("o"))
+                Csv(r.LastReportedAt?.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z")
             ));
         }
+    }
 
-        static string Csv(string? s)
-        {
-            if (string.IsNullOrEmpty(s))
-                return "";
+    private static string ScoreBand(int score)
+    {
+        if (score <= 0) return "Clean";
+        if (score <= 25) return "Low";
+        if (score <= 50) return "Medium";
+        if (score <= 75) return "High";
+        return "Critical";
+    }
 
-            var needsQuotes = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
-            if (!needsQuotes) return s;
+    private static string Csv(string? s)
+    {
+        if (string.IsNullOrEmpty(s))
+            return "";
 
-            return "\"" + s.Replace("\"", "\"\"") + "\"";
-        }
+        var needsQuotes = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needsQuotes) return s;
+
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
     }
 
     private static RateLimitInfo ReadRateLimit(HttpResponseMessage resp)
@@ -225,7 +239,7 @@ public sealed class AbuseIpDbClient : IDisposable
             return null;
 
         var s = vals.FirstOrDefault();
-        return int.TryParse(s, out var i) ? i : null;
+        return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i) ? i : null;
     }
 
     private static long? TryGetLongHeader(HttpResponseHeaders headers, string name)
@@ -234,7 +248,7 @@ public sealed class AbuseIpDbClient : IDisposable
             return null;
 
         var s = vals.FirstOrDefault();
-        return long.TryParse(s, out var i) ? i : null;
+        return long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i) ? i : null;
     }
 
     private static string TrimForError(string s)
@@ -316,7 +330,7 @@ public sealed class AbuseIpQuotaExceededException : Exception
 
     private static string BuildMessage(AbuseIpDbClient.RateLimitInfo rl)
     {
-        var reset = rl.ResetAtUtc?.ToString("yyyy-MM-dd HH:mm:ss") + "Z";
+        var reset = rl.ResetAtUtc?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z";
         return $"Daily quota exceeded (Remaining={rl.Remaining?.ToString() ?? "?"}, Limit={rl.Limit?.ToString() ?? "?"}, ResetAt={reset ?? "?"}).";
     }
 }

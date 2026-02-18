@@ -23,11 +23,15 @@ public sealed class IisMenu : IMenu
             ),
             new ConsoleEx.MenuItem(
                 $"Find Bursts Patterns (saved IPs: {savedBurstIps})",
-                "Detect bursty request patterns per IP using time buckets (rate/enum/error heuristics)."
+                "Detect bursty request patterns per IP using time buckets; can save distinct burst IPs to session."
             ),
             new ConsoleEx.MenuItem(
-                "Top endpoints by latency (placeholder)",
-                "Future: group by cs-uri-stem and rank by time-taken."
+                "Top bandwidth IPs / URIs (sc-bytes)",
+                "Rank public client IPs by total response bytes and show their top URIs by bytes."
+            ),
+            new ConsoleEx.MenuItem(
+                "Uploads / payload attempts (cs-bytes)",
+                "Find IPs/endpoints sending large request bodies (POST-heavy) and show max/total request bytes."
             ),
             new ConsoleEx.MenuItem("Back", "Return to main menu.")
         };
@@ -48,10 +52,14 @@ public sealed class IisMenu : IMenu
                 return this;
 
             case 2:
-                await IisOption_TopEndpointsByLatency.RunAsync(_session.Root, ct);
+                await IisOption_BytesIntel.RunTopBandwidthAsync(_session.Root, ct);
                 return this;
 
             case 3:
+                await IisOption_BytesIntel.RunUploadsPayloadsAsync(_session.Root, ct);
+                return this;
+
+            case 4:
                 return new MainMenu(_session);
 
             default:
