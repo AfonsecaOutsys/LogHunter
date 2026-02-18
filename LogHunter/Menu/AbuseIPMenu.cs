@@ -14,6 +14,8 @@ public sealed class AbuseIpMenu : IMenu
 {
     private readonly SessionState _session;
 
+    private const string SelectAllSentinel = "__ALL__";
+
     public AbuseIpMenu(SessionState session) => _session = session;
 
     public async Task<IMenu?> ShowAsync(CancellationToken ct = default)
@@ -23,11 +25,20 @@ public sealed class AbuseIpMenu : IMenu
         var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
         var keySource = string.IsNullOrWhiteSpace(cfg.ApiKey) ? "hard-coded default" : "config override";
 
+        var burstCount = _session.IisBurstIps?.Count ?? 0;
+        var burstUpdated = _session.IisBurstIpsUpdatedUtc is null
+            ? "never"
+            : _session.IisBurstIpsUpdatedUtc.Value.ToString("yyyy-MM-dd HH:mm:ss") + "Z";
+
         var items = new[]
         {
             new ConsoleEx.MenuItem(
                 "Check IPs from /output (CSV)",
                 $"Pick a recent CSV from /output, extract the IP column, and check selected IPs.\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
+
+            new ConsoleEx.MenuItem(
+                $"Check IPs from IIS Bursts Session ({burstCount})",
+                $"Uses the last saved burst IP set from IIS → Find Bursts Patterns.\nLast updated: {burstUpdated}\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
 
             new ConsoleEx.MenuItem(
                 "Set/Update API key (writes config)",
@@ -49,10 +60,14 @@ public sealed class AbuseIpMenu : IMenu
                 return this;
 
             case 1:
-                await ConfigureAsync(ct).ConfigureAwait(false);
+                await CheckFromIisBurstSessionAsync(ct).ConfigureAwait(false);
                 return this;
 
             case 2:
+                await ConfigureAsync(ct).ConfigureAwait(false);
+                return this;
+
+            case 3:
                 return new MainMenu(_session);
 
             default:
@@ -96,6 +111,71 @@ public sealed class AbuseIpMenu : IMenu
         AnsiConsole.MarkupLine("[green]Saved[/]");
         ConsoleEx.Pause();
         await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private async Task CheckFromIisBurstSessionAsync(CancellationToken ct)
+    {
+        ConsoleEx.Header("AbuseIP • IIS Bursts Session", $"Workspace: {_session.Root}");
+
+        var set = _session.IisBurstIps;
+        var updated = _session.IisBurstIpsUpdatedUtc;
+
+        if (set is null || set.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no burst IPs saved in session)[/]");
+            AnsiConsole.MarkupLine("[dim]Run IIS → Find Bursts Patterns and choose to save burst IPs to session.[/]");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"[dim]Burst IPs in session:[/] {set.Count}");
+        AnsiConsole.MarkupLine($"[dim]Last updated:[/] {(updated is null ? "unknown" : updated.Value.ToString("yyyy-MM-dd HH:mm:ss") + "Z")}");
+        AnsiConsole.WriteLine();
+
+        // Keep selection list manageable (like CSV path)
+        var choices = set
+            .OrderBy(ip => ip, StringComparer.OrdinalIgnoreCase)
+            .Take(800)
+            .Select(ip => new IpChoice(ip, 0))
+            .ToList();
+
+        var selectedIps = AnsiConsole.Prompt(
+            new MultiSelectionPrompt<IpChoice>()
+                .Title("Select IPs to check (space to toggle, enter to run):")
+                .PageSize(18)
+                .WrapAround()
+                .NotRequired()
+                .InstructionsText("[grey](tip: include [[Select ALL]] to quickly pick everything; list is capped to first 800 IPs)[/]")
+                .AddChoices(new[] { new IpChoice(SelectAllSentinel, -1) }.Concat(choices))
+                .UseConverter(x =>
+                {
+                    if (x.Ip == SelectAllSentinel) return "[bold][[Select ALL]][/]";
+                    return x.Ip;
+                }));
+
+        if (selectedIps.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        List<string> ipsToCheck;
+        if (selectedIps.Any(x => x.Ip == SelectAllSentinel))
+        {
+            // check full set (not just the capped list)
+            ipsToCheck = set.OrderBy(ip => ip, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        else
+        {
+            ipsToCheck = selectedIps
+                .Select(x => x.Ip)
+                .Where(ip => ip != SelectAllSentinel)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        await CheckIpsAsync(ipsToCheck, sourceLabel: "IIS Bursts Session", ct).ConfigureAwait(false);
     }
 
     private async Task CheckFromOutputCsvAsync(CancellationToken ct)
@@ -181,24 +261,29 @@ public sealed class AbuseIpMenu : IMenu
             return;
         }
 
-        // -----------------------------
-        // Quota/auth -> offer key swap (session-only or saved to config)
-        // -----------------------------
+        var ipsToCheck = selectedIps.Select(x => x.Ip).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        await CheckIpsAsync(ipsToCheck, sourceLabel: $"CSV: {Path.GetFileName(picked.FullPath)}", ct).ConfigureAwait(false);
+    }
+
+    private async Task CheckIpsAsync(List<string> ipsToCheck, string sourceLabel, CancellationToken ct)
+    {
+        ConsoleEx.Header("AbuseIP • Running checks", $"{sourceLabel} | IPs: {ipsToCheck.Count}");
+
         var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
 
         string? sessionApiKeyOverride = null;
         var client = new AbuseIpDbClient(_session.Root, sessionApiKeyOverride);
 
-        var results = new List<AbuseIpCheckResult>(selectedIps.Count);
+        var results = new List<AbuseIpCheckResult>(ipsToCheck.Count);
         var failures = new List<(string Ip, string Error)>();
 
         await AnsiConsole.Progress()
             .AutoClear(true)
             .StartAsync(async ctx =>
             {
-                var task = ctx.AddTask("Checking IP reputation…", maxValue: selectedIps.Count);
+                var task = ctx.AddTask("Checking IP reputation…", maxValue: ipsToCheck.Count);
 
-                foreach (var ip in selectedIps.Select(x => x.Ip))
+                foreach (var ip in ipsToCheck)
                 {
                     ct.ThrowIfCancellationRequested();
 
@@ -300,11 +385,8 @@ public sealed class AbuseIpMenu : IMenu
             });
 
         client.Dispose();
-        // -----------------------------
-        // End section
-        // -----------------------------
 
-        ConsoleEx.Header("AbuseIP • Results", $"Checked: {results.Count}  |  Failed: {failures.Count}");
+        ConsoleEx.Header("AbuseIP • Results", $"Source: {sourceLabel} | Checked: {results.Count}  |  Failed: {failures.Count}");
 
         RenderResultsTable(results);
 
