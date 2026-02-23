@@ -1,8 +1,14 @@
 ﻿using LogHunter.Utils;
 using Spectre.Console;
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
@@ -38,21 +44,21 @@ public static class IisOption_BytesIntel
 
     public static async Task RunTopBandwidthAsync(string root, CancellationToken ct = default)
     {
-        ConsoleEx.Header("IIS: Top bandwidth IPs / URIs (sc-bytes)");
+        ConsoleEx.Header("IIS: Top bandwidth IPs and URIs (sc-bytes)");
 
-        var (iisDir, files) = EnsureIisFiles(root);
+        var (_, files) = EnsureIisFiles(root);
         if (files is null) return;
 
         // Pass 1: per-IP totals only
         var ipAgg = new Dictionary<string, IpBandwidthAgg>(StringComparer.OrdinalIgnoreCase);
         var ipClassCache = new Dictionary<string, IpClass>(StringComparer.OrdinalIgnoreCase);
 
-        await ScanBandwidthPass1Async(files, ipAgg, ipClassCache, ct);
+        await ScanBandwidthPass1Async(files, ipAgg, ipClassCache, ct).ConfigureAwait(false);
 
         if (ipAgg.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No public-client traffic found (after filters).[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No public-client traffic found (after filters).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -72,11 +78,10 @@ public static class IisOption_BytesIntel
 
         var globalUris = new Dictionary<string, UriAgg>(StringComparer.OrdinalIgnoreCase);
 
-        await ScanBandwidthPass2Async(files, topSet, perIpUris, globalUris, ipClassCache, ct);
+        await ScanBandwidthPass2Async(files, topSet, perIpUris, globalUris, ipClassCache, ct).ConfigureAwait(false);
 
         // -------- Render --------
         ConsoleEx.Header("IIS: Top bandwidth IPs", $"Workspace: {root}");
-
         RenderBandwidthTable(top, perIpUris);
 
         // -------- Export CSVs --------
@@ -86,14 +91,14 @@ public static class IisOption_BytesIntel
 
         var ipsCsv = Path.Combine(outDir, $"iis_top_bandwidth_ips_{stamp}.csv");
         WriteCsv(ipsCsv, BuildBandwidthIpsCsv(top, perIpUris));
-        AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(ipsCsv)}");
+        ConsoleEx.Success($"Exported: {ipsCsv}");
 
         var urisCsv = Path.Combine(outDir, $"iis_top_bandwidth_uris_{stamp}.csv");
         WriteCsv(urisCsv, BuildBandwidthUrisCsv(top, perIpUris, TopUrisPerIp));
-        AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(urisCsv)}");
+        ConsoleEx.Success($"Exported: {urisCsv}");
 
         // Optional global table + CSV
-        var showGlobal = ConsoleEx.ReadYesNo("Show Top URIs by total sc-bytes (global)?", defaultYes: false);
+        var showGlobal = ConsoleEx.ReadYesNo("Show top URIs by total sc-bytes (global)?", defaultYes: false);
         if (showGlobal)
         {
             ConsoleEx.Header("IIS: Top URIs by sc-bytes (global)");
@@ -127,29 +132,29 @@ public static class IisOption_BytesIntel
 
             var globalCsv = Path.Combine(outDir, $"iis_top_bandwidth_uris_global_{stamp}.csv");
             WriteCsv(globalCsv, BuildGlobalUriCsv(ordered));
-            AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(globalCsv)}");
+            ConsoleEx.Success($"Exported: {globalCsv}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     public static async Task RunUploadsPayloadsAsync(string root, CancellationToken ct = default)
     {
-        ConsoleEx.Header("IIS: Uploads / payload attempts (cs-bytes)");
+        ConsoleEx.Header("IIS: Uploads and payload attempts (cs-bytes)");
 
-        var (iisDir, files) = EnsureIisFiles(root);
+        var (_, files) = EnsureIisFiles(root);
         if (files is null) return;
 
         // Pass 1: per-IP totals for POST/PUT payloads only (fast)
         var ipAgg = new Dictionary<string, UploadAgg>(StringComparer.OrdinalIgnoreCase);
         var ipClassCache = new Dictionary<string, IpClass>(StringComparer.OrdinalIgnoreCase);
 
-        await ScanUploadsPass1Async(files, ipAgg, ipClassCache, ct);
+        await ScanUploadsPass1Async(files, ipAgg, ipClassCache, ct).ConfigureAwait(false);
 
         if (ipAgg.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No public-client POST/PUT payload traffic found (after filters).[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No public-client POST/PUT payload traffic found (after filters).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -170,7 +175,7 @@ public static class IisOption_BytesIntel
 
         var globalEndpoints = new Dictionary<string, EndpointAgg>(StringComparer.OrdinalIgnoreCase);
 
-        await ScanUploadsPass2Async(files, topSet, perIpEndpoints, globalEndpoints, ipClassCache, ct);
+        await ScanUploadsPass2Async(files, topSet, perIpEndpoints, globalEndpoints, ipClassCache, ct).ConfigureAwait(false);
 
         // -------- Render --------
         ConsoleEx.Header("IIS: Payload-heavy IPs (POST/PUT)", $"Workspace: {root}");
@@ -183,13 +188,13 @@ public static class IisOption_BytesIntel
 
         var ipsCsv = Path.Combine(outDir, $"iis_uploads_payload_ips_{stamp}.csv");
         WriteCsv(ipsCsv, BuildUploadsIpsCsv(top, perIpEndpoints));
-        AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(ipsCsv)}");
+        ConsoleEx.Success($"Exported: {ipsCsv}");
 
         var epsCsv = Path.Combine(outDir, $"iis_uploads_payload_endpoints_{stamp}.csv");
         WriteCsv(epsCsv, BuildUploadsEndpointsCsv(top, perIpEndpoints, TopEndpointsPerIp));
-        AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(epsCsv)}");
+        ConsoleEx.Success($"Exported: {epsCsv}");
 
-        var showGlobal = ConsoleEx.ReadYesNo("Show Top endpoints by total cs-bytes (global)?", defaultYes: true);
+        var showGlobal = ConsoleEx.ReadYesNo("Show top endpoints by total cs-bytes (global)?", defaultYes: true);
         if (showGlobal)
         {
             ConsoleEx.Header("IIS: Top endpoints by cs-bytes (global)");
@@ -229,10 +234,10 @@ public static class IisOption_BytesIntel
 
             var globalCsv = Path.Combine(outDir, $"iis_uploads_payload_endpoints_global_{stamp}.csv");
             WriteCsv(globalCsv, BuildGlobalEndpointCsv(ordered));
-            AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(globalCsv)}");
+            ConsoleEx.Success($"Exported: {globalCsv}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // -------- Pass 1 scanners (fast, per-IP totals only) --------
@@ -245,16 +250,16 @@ public static class IisOption_BytesIntel
     {
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Pass 1/2: scanning totals (bandwidth)…", async ctx =>
+            .StartAsync("Pass 1/2: scanning totals (bandwidth)...", async ctx =>
             {
                 for (int f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Pass 1/2: totals… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Pass 1/2: totals... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null) continue;
 
                     if (!map.TryGetIndex("sc-bytes", out var iScBytes)) continue;
@@ -308,7 +313,7 @@ public static class IisOption_BytesIntel
                                 else if (m.Equals("PUT", StringComparison.OrdinalIgnoreCase)) a.Put++;
                             }
                         }
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
     }
@@ -321,16 +326,16 @@ public static class IisOption_BytesIntel
     {
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Pass 1/2: scanning totals (uploads)…", async ctx =>
+            .StartAsync("Pass 1/2: scanning totals (uploads)...", async ctx =>
             {
                 for (int f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Pass 1/2: totals… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Pass 1/2: totals... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null) continue;
 
                     if (!map.TryGetIndex("cs-method", out var iMethod)) continue;
@@ -382,7 +387,7 @@ public static class IisOption_BytesIntel
                         else if (status >= 300 && status <= 399) a.C3xx++;
                         else if (status >= 400 && status <= 499) a.C4xx++;
                         else if (status >= 500 && status <= 599) a.C5xx++;
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
     }
@@ -399,16 +404,16 @@ public static class IisOption_BytesIntel
     {
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Pass 2/2: scanning top IP URIs…", async ctx =>
+            .StartAsync("Pass 2/2: scanning top IP URIs...", async ctx =>
             {
                 for (int f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Pass 2/2: URIs… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Pass 2/2: URIs... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null) continue;
 
                     if (!map.TryGetIndex("sc-bytes", out var iScBytes)) continue;
@@ -443,7 +448,7 @@ public static class IisOption_BytesIntel
                         AddUriAgg(ipMap, uri, scBytes, PerIpUriCap);
 
                         AddUriAgg(globalUris, uri, scBytes, GlobalUriCap);
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
     }
@@ -458,16 +463,16 @@ public static class IisOption_BytesIntel
     {
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Pass 2/2: scanning top IP endpoints…", async ctx =>
+            .StartAsync("Pass 2/2: scanning top IP endpoints...", async ctx =>
             {
                 for (int f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Pass 2/2: endpoints… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Pass 2/2: endpoints... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null) continue;
 
                     if (!map.TryGetIndex("cs-method", out var iMethod)) continue;
@@ -511,7 +516,7 @@ public static class IisOption_BytesIntel
                         AddEndpointAgg(ipMap, endpoint, csBytes, sensitive, PerIpEndpointCap);
 
                         AddEndpointAgg(globalEndpoints, endpoint, csBytes, sensitive, GlobalEndpointCap);
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
     }
@@ -595,7 +600,9 @@ public static class IisOption_BytesIntel
         {
             var a = top[i];
 
-            var fourxxPct = a.Hits == 0 ? "0.0" : ((double)a.C4xx / a.Hits * 100.0).ToString("0.0", CultureInfo.InvariantCulture);
+            var fourxxPct = a.Hits == 0
+                ? "0.0"
+                : ((double)a.C4xx / a.Hits * 100.0).ToString("0.0", CultureInfo.InvariantCulture);
 
             string topUriCell = "-";
             if (perIpUris.TryGetValue(a.Ip, out var map) && map.Count > 0)
@@ -623,7 +630,8 @@ public static class IisOption_BytesIntel
         // Per IP details (with red highlighting for sensitive OutSystems surfaces)
         foreach (var a in top)
         {
-            AnsiConsole.MarkupLine($"[bold]{Markup.Escape(a.Ip)}[/]  [dim]sc-bytes:[/] {FormatBytes(a.TotalScBytes)}  [dim]hits:[/] {a.Hits:n0}  [dim]2xx/3xx/4xx/5xx:[/] {a.C2xx}/{a.C3xx}/{a.C4xx}/{a.C5xx}");
+            AnsiConsole.MarkupLine(
+                $"[bold]{Markup.Escape(a.Ip)}[/]  [dim]sc-bytes:[/] {FormatBytes(a.TotalScBytes)}  [dim]hits:[/] {a.Hits:n0}  [dim]2xx/3xx/4xx/5xx:[/] {a.C2xx}/{a.C3xx}/{a.C4xx}/{a.C5xx}");
 
             if (!perIpUris.TryGetValue(a.Ip, out var map) || map.Count == 0)
             {
@@ -696,7 +704,8 @@ public static class IisOption_BytesIntel
 
         foreach (var a in top)
         {
-            AnsiConsole.MarkupLine($"[bold]{Markup.Escape(a.Ip)}[/]  [dim]POST/PUT:[/] {a.PostPutCount:n0}  [dim]max cs-bytes:[/] {FormatBytes(a.MaxCsBytes)}  [dim]total cs-bytes:[/] {FormatBytes(a.TotalCsBytes)}");
+            AnsiConsole.MarkupLine(
+                $"[bold]{Markup.Escape(a.Ip)}[/]  [dim]POST/PUT:[/] {a.PostPutCount:n0}  [dim]max cs-bytes:[/] {FormatBytes(a.MaxCsBytes)}  [dim]total cs-bytes:[/] {FormatBytes(a.TotalCsBytes)}");
 
             if (!perIpEndpoints.TryGetValue(a.Ip, out var map) || map.Count == 0)
             {
@@ -979,16 +988,16 @@ public static class IisOption_BytesIntel
         var iisDir = Path.Combine(root, "IIS");
         if (!Directory.Exists(iisDir))
         {
-            AnsiConsole.MarkupLine($"[red]Missing IIS folder:[/] {Markup.Escape(iisDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"Missing IIS folder: {iisDir}");
+            ConsoleEx.Pause("Press Enter to return...");
             return (iisDir, null);
         }
 
         var files = IisW3cReader.EnumerateLogFiles(iisDir);
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No IIS logs found[/] under: {Markup.Escape(iisDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No IIS logs found under: {iisDir}");
+            ConsoleEx.Pause("Press Enter to return...");
             return (iisDir, null);
         }
 
@@ -1040,12 +1049,10 @@ public static class IisOption_BytesIntel
         raw = raw.Trim();
         if (raw.IsEmpty || raw[0] == '-') return null;
 
-        // "1.2.3.4, 10.0.0.1"
         var comma = raw.IndexOf(',');
         if (comma >= 0)
             raw = raw.Slice(0, comma).Trim();
 
-        // "[::1]:1234" => "::1"
         if (raw.Length > 0 && raw[0] == '[')
         {
             var end = raw.IndexOf(']');
@@ -1054,7 +1061,6 @@ public static class IisOption_BytesIntel
         }
         else
         {
-            // IPv4:port (single colon)
             var colon = raw.IndexOf(':');
             if (colon > 0 && raw.Slice(colon + 1).IndexOf(':') < 0)
                 raw = raw.Slice(0, colon);
@@ -1069,7 +1075,6 @@ public static class IisOption_BytesIntel
         if (cache.TryGetValue(ip, out var cls))
             return cls == IpClass.Public;
 
-        // parse once per unique IP (fast enough; avoids per-line parsing)
         if (!IPAddress.TryParse(ip, out var addr))
         {
             cache[ip] = IpClass.Invalid;
@@ -1130,7 +1135,7 @@ public static class IisOption_BytesIntel
     private static string FormatRatio(long scBytes, long csBytes)
     {
         if (scBytes <= 0 && csBytes <= 0) return "0";
-        if (csBytes <= 0) return "∞";
+        if (csBytes <= 0) return "inf";
 
         var r = (double)scBytes / csBytes;
         if (r >= 1000) return r.ToString("0", CultureInfo.InvariantCulture);
@@ -1144,10 +1149,12 @@ public static class IisOption_BytesIntel
         if (string.IsNullOrEmpty(s) || s.Length <= max) return s;
         if (max <= 3) return s[..max];
 
-        var head = (max - 1) / 2;
-        var tail = max - head - 1;
+        // Use ASCII "..." to avoid font/console issues.
+        var cut = max - 3;
+        var head = cut / 2;
+        var tail = cut - head;
 
-        return s[..head] + "…" + s[^tail..];
+        return s[..head] + "..." + s[^tail..];
     }
 
     // -------- CSV helpers --------
@@ -1155,7 +1162,7 @@ public static class IisOption_BytesIntel
     private static string CsvEsc(string? s)
     {
         if (string.IsNullOrEmpty(s)) return "";
-        if (s.IndexOfAny([',', '"', '\n', '\r']) < 0) return s;
+        if (s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return s;
         return "\"" + s.Replace("\"", "\"\"") + "\"";
     }
 

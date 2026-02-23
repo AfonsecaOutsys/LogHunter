@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Collections.Generic;
+using System.Text;
 
 namespace LogHunter.Services;
 
@@ -6,12 +7,14 @@ public static class AlbLogTokenizer
 {
     /// <summary>
     /// Splits an ALB log line into tokens, treating quoted segments as single tokens.
-    /// Quotes are removed from returned tokens.
+    /// Returned tokens do not include surrounding quotes.
     /// </summary>
     public static List<string> Tokenize(string line)
     {
         var tokens = new List<string>(48);
-        if (string.IsNullOrWhiteSpace(line)) return tokens;
+
+        if (string.IsNullOrWhiteSpace(line))
+            return tokens;
 
         var sb = new StringBuilder(line.Length);
         bool inQuotes = false;

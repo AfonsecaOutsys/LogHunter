@@ -1,11 +1,16 @@
 ﻿// Services/PlatformAuthScanner.cs
 using ExcelDataReader;
 using Microsoft.VisualBasic.FileIO;
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
-using IOSearchOption = System.IO.SearchOption;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
@@ -34,10 +39,10 @@ public static class PlatformAuthScanner
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         var suspicious = new HashSet<string>(
-            suspiciousIps.Where(s => !string.IsNullOrWhiteSpace(s)),
+            suspiciousIps.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()),
             StringComparer.OrdinalIgnoreCase);
 
-        var files = Directory.EnumerateFiles(dir, "*.*", IOSearchOption.AllDirectories)
+        var files = Directory.EnumerateFiles(dir, "*.*", System.IO.SearchOption.AllDirectories)
             .Where(p => p.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
                         p.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -63,7 +68,7 @@ public static class PlatformAuthScanner
             }
             catch
             {
-                // ignore broken files
+                // Ignore broken files.
             }
         }
 
@@ -75,7 +80,11 @@ public static class PlatformAuthScanner
 
     private static bool ScanCsv(string path, HashSet<string> suspicious, PlatformAuthScanResult res, CancellationToken ct)
     {
-        // Detect delimiter
+        // Ignore integrations by filename (cheap + safe)
+        if (Path.GetFileName(path).Contains("Integrations", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // Detect delimiter from header line
         var firstLine = File.ReadLines(path).FirstOrDefault() ?? "";
         var comma = firstLine.Count(c => c == ',');
         var semi = firstLine.Count(c => c == ';');
@@ -95,10 +104,6 @@ public static class PlatformAuthScanner
 
         var header = parser.ReadFields();
         if (header is null || header.Length == 0)
-            return false;
-
-        // Ignore integrations by filename (cheap + safe)
-        if (Path.GetFileName(path).Contains("Integrations", StringComparison.OrdinalIgnoreCase))
             return false;
 
         if (!TryClassify(header, out var kind, out var spec))
@@ -130,6 +135,9 @@ public static class PlatformAuthScanner
             res.AddHit(effectiveIp, kind);
         }
 
+        if (anyHit)
+            res.AddMatchedFile(kind);
+
         return anyHit;
     }
 
@@ -144,11 +152,13 @@ public static class PlatformAuthScanner
         using var reader = ExcelReaderFactory.CreateReader(stream);
 
         bool anyHit = false;
+        var kindsHit = new HashSet<PlatformLogKind>();
 
         do
         {
             ct.ThrowIfCancellationRequested();
 
+            // First row in each sheet is expected to be the header
             if (!reader.Read())
                 continue;
 
@@ -174,9 +184,18 @@ public static class PlatformAuthScanner
                     continue;
 
                 anyHit = true;
+                kindsHit.Add(kind);
                 res.AddHit(effectiveIp, kind);
             }
-        } while (reader.NextResult());
+        }
+        while (reader.NextResult());
+
+        if (anyHit)
+        {
+            // One file can contain multiple sheets/kinds
+            foreach (var k in kindsHit)
+                res.AddMatchedFile(k);
+        }
 
         return anyHit;
     }
@@ -188,21 +207,18 @@ public static class PlatformAuthScanner
         kind = PlatformLogKind.Unknown;
         spec = default;
 
-        // Error logs: env blob + user id
         if (TryResolveError(headers, out spec))
         {
             kind = PlatformLogKind.Error;
             return true;
         }
 
-        // Screen requests: net.host.ip OR source + user id
         if (TryResolveScreen(headers, out spec))
         {
             kind = PlatformLogKind.ScreenRequests;
             return true;
         }
 
-        // HTTP logs: http.client_ip OR Client_IP + user id
         if (TryResolveHttp(headers, out spec, out var isTraditional))
         {
             kind = isTraditional ? PlatformLogKind.TraditionalWebRequests : PlatformLogKind.General;
@@ -226,13 +242,12 @@ public static class PlatformAuthScanner
             if (envIdx < 0 && n.EndsWith("environmentinformation", StringComparison.OrdinalIgnoreCase))
                 envIdx = i;
 
-            if (userIdx < 0 && (n == "userid" || n == "userid" || n == "logattributesenduserid"))
+            if (userIdx < 0 && (n == "userid" || n == "logattributesenduserid"))
                 userIdx = i;
         }
 
         if (envIdx >= 0 && userIdx >= 0)
         {
-            // NOTE: parameter names must match EXACTLY: UserIdIdx / IpIdx / EnvIdx
             spec = new LogSpec(UserIdIdx: userIdx, IpIdx: -1, EnvIdx: envIdx);
             return true;
         }
@@ -284,10 +299,10 @@ public static class PlatformAuthScanner
             if (ipIdx < 0 && (n == "logattributeshttpclientip" || n == "clientip"))
                 ipIdx = i;
 
-            if (userIdx < 0 && (n == "userid" || n == "userid" || n == "logattributesenduserid"))
+            if (userIdx < 0 && (n == "userid" || n == "logattributesenduserid"))
                 userIdx = i;
 
-            // Traditional web requests discriminator (your CSV/XLSX samples have these)
+            // Traditional web requests discriminator (based on your exports)
             if (n.Contains("traditionalss") || n == "msisdn" || n == "screentype" || n.Contains("screenaccessmode"))
                 traditionalHint = true;
         }
@@ -499,6 +514,14 @@ public sealed class PlatformAuthScanResult
             case PlatformLogKind.TraditionalWebRequests: h.Traditional++; break;
             case PlatformLogKind.General: h.General++; break;
         }
+    }
+
+    public void AddMatchedFile(PlatformLogKind kind)
+    {
+        if (FilesMatchedByKind.TryGetValue(kind, out var v))
+            FilesMatchedByKind[kind] = v + 1;
+        else
+            FilesMatchedByKind[kind] = 1;
     }
 
     public void FinalizeAggregates()

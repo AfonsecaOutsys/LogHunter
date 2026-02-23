@@ -1,5 +1,8 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using Spectre.Console;
 
@@ -27,7 +30,6 @@ public static class Charts
 
         var opened = TryOpen(htmlPath);
 
-        // Nice UX (safe even if Spectre is present everywhere now)
         if (opened)
             AnsiConsole.MarkupLine($"Chart opened: [green]{Markup.Escape(htmlPath)}[/]");
         else
@@ -47,12 +49,12 @@ public static class Charts
         string filePrefix)
     {
         if (series is null || series.Count == 0)
-            throw new ArgumentException("series is empty", nameof(series));
+            throw new ArgumentException("Series is empty.", nameof(series));
 
-        // Validate shared timeline (we will chart against first series times)
+        // Validate shared timeline (we chart against the first series times)
         var times = series[0].TimesUtc;
         if (times.Length == 0)
-            throw new ArgumentException("timeline is empty", nameof(series));
+            throw new ArgumentException("Timeline is empty.", nameof(series));
 
         foreach (var s in series)
         {
@@ -73,13 +75,16 @@ public static class Charts
             tms[i] = new DateTimeOffset(dt).ToUnixTimeMilliseconds();
         }
 
+        var safeTitle = title ?? "";
+        var safeY = yLabel ?? "";
+
         // Build HTML
         var sb = new StringBuilder(256 * 1024);
         sb.AppendLine("<!doctype html>");
         sb.AppendLine("<html lang=\"en\"><head>");
         sb.AppendLine("<meta charset=\"utf-8\"/>");
         sb.AppendLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
-        sb.AppendLine($"<title>{Html(title)}</title>");
+        sb.AppendLine($"<title>{Html(safeTitle)}</title>");
         sb.AppendLine("<style>");
         sb.AppendLine(@"
 :root { color-scheme: dark; }
@@ -101,7 +106,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
         sb.AppendLine("</style></head><body>");
         sb.AppendLine("<div class=\"wrap\">");
         sb.AppendLine("<div class=\"hdr\">");
-        sb.AppendLine($"<h1>{Html(title)}</h1>");
+        sb.AppendLine($"<h1>{Html(safeTitle)}</h1>");
         sb.AppendLine("<div class=\"sub\">offline interactive chart</div>");
         sb.AppendLine("</div>");
 
@@ -116,7 +121,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
         sb.AppendLine("<div style=\"height:8px\"></div>");
         sb.AppendLine("<canvas id=\"c\"></canvas>");
         sb.AppendLine("<div style=\"height:10px\"></div>");
-        sb.AppendLine($"<div class=\"small\">Y: {Html(yLabel)} • X: UTC time buckets</div>");
+        sb.AppendLine($"<div class=\"small\">Y: {Html(safeY)} • X: UTC time buckets</div>");
         sb.AppendLine("</div>"); // card
         sb.AppendLine("</div>"); // wrap
 
@@ -455,7 +460,11 @@ draw();
     }
 
     private static string Html(string s)
-        => (s ?? "").Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+        => (s ?? "")
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;");
 
     private static string Js(string s)
         => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";

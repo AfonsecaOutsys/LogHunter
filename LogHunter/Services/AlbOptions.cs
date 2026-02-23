@@ -1,4 +1,9 @@
-﻿using System.Text;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using LogHunter.Models;
 using LogHunter.Utils;
 using Spectre.Console;
@@ -13,7 +18,7 @@ public static class AlbOptions
         foreach (var f in files)
         {
             try { total += new FileInfo(f).Length; }
-            catch { }
+            catch { /* ignore */ }
         }
         return total;
     }
@@ -39,7 +44,13 @@ public static class AlbOptions
         var t = new Table().RoundedBorder().AddColumn("Field").AddColumn("Value");
         foreach (var (k, v) in rows)
             t.AddRow(Markup.Escape(k), Markup.Escape(v));
-        AnsiConsole.Write(new Panel(t) { Header = new PanelHeader(title), Border = BoxBorder.Rounded });
+
+        AnsiConsole.Write(new Panel(t)
+        {
+            Header = new PanelHeader(Markup.Escape(title)),
+            Border = BoxBorder.Rounded
+        });
+
         AnsiConsole.WriteLine();
     }
 
@@ -81,7 +92,7 @@ public static class AlbOptions
                     }).ConfigureAwait(false);
                 }
 
-                // Ensure it reaches 100% even if deltas didn’t perfectly match total bytes
+                // Ensure 100% even if deltas don't perfectly match file sizes.
                 if (task.Value < task.MaxValue)
                     task.Value = task.MaxValue;
 
@@ -98,13 +109,13 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Track requests per IP per 5 minutes (up to 5 IPs)",
+        ConsoleEx.Header("ALB: Requests per IP (5-minute buckets)",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -115,24 +126,25 @@ public static class AlbOptions
             var next = ConsoleEx.ReadLineWithEsc($"Add IP #{ips.Count + 1} (blank to finish):");
             if (next is null)
             {
-                AnsiConsole.MarkupLine("[grey](cancelled)[/]");
-                ConsoleEx.Pause();
+                ConsoleEx.Info("Cancelled.");
+                ConsoleEx.Pause("Press Enter to return...");
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(next)) break;
+            if (string.IsNullOrWhiteSpace(next))
+                break;
 
             next = next.Trim();
 
             if (!IsLikelyIp(next))
             {
-                AnsiConsole.MarkupLine("[yellow]That doesn't look like an IPv4 address. Try again.[/]");
+                ConsoleEx.Warn("That does not look like an IPv4 address. Try again.");
                 continue;
             }
 
             if (ips.Contains(next, StringComparer.Ordinal))
             {
-                AnsiConsole.MarkupLine("[yellow]Already added.[/]");
+                ConsoleEx.Warn("Already added.");
                 continue;
             }
 
@@ -141,16 +153,16 @@ public static class AlbOptions
 
         if (ips.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No IPs provided.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No IPs provided.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -166,7 +178,6 @@ public static class AlbOptions
         foreach (var ip in ips)
             bucketsByIp[ip] = new SortedDictionary<DateTime, long>();
 
-        // We implement progress at file level (bytes in file), without changing your algorithm
         var totalBytes = SumFileSizesSafe(files);
 
         await AnsiConsole.Progress()
@@ -200,7 +211,7 @@ public static class AlbOptions
                         var ip = AlbScanner.ExtractAlbClientIp(line);
                         if (ip is null) continue;
 
-                        if (!bucketsByIp.ContainsKey(ip))
+                        if (!bucketsByIp.TryGetValue(ip, out var map))
                             continue;
 
                         var tsUtc = AlbScanner.ExtractAlbTimestampUtc(line);
@@ -208,7 +219,6 @@ public static class AlbOptions
 
                         var bucket = FloorTo5MinUtc(tsUtc.Value);
 
-                        var map = bucketsByIp[ip];
                         if (map.TryGetValue(bucket, out var cur))
                             map[bucket] = cur + 1;
                         else
@@ -243,8 +253,8 @@ public static class AlbOptions
 
         if (allBuckets.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No matches found for those IPs.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No matches found for those IPs.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -271,7 +281,7 @@ public static class AlbOptions
             }
         }
 
-        AnsiConsole.MarkupLine($"Exported CSV: [green]{Markup.Escape(csvFile)}[/]");
+        ConsoleEx.Success($"Exported CSV: {csvFile}");
 
         // Build series for chart (shared timeline)
         var times = allBuckets.ToArray();
@@ -298,8 +308,8 @@ public static class AlbOptions
             series: series,
             filePrefix: "ALB_RequestsPer5Min");
 
-        AnsiConsole.MarkupLine($"Chart (offline HTML): [green]{Markup.Escape(html)}[/]");
-        ConsoleEx.Pause();
+        ConsoleEx.Success($"Chart (offline HTML): {html}");
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // ---------- OPTION 2 ----------
@@ -309,29 +319,29 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Top IPs for endpoint/path fragment (optimized)",
+        ConsoleEx.Header("ALB: Top IPs for endpoint/path fragment",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var endpoint = ConsoleEx.Prompt("Paste endpoint/path fragment (example: ActionLogin_Wrapper): ");
+        var endpoint = ConsoleEx.Prompt("Endpoint/path fragment (e.g., ActionLogin_Wrapper):");
         if (string.IsNullOrWhiteSpace(endpoint))
         {
-            AnsiConsole.MarkupLine("[yellow]No endpoint provided.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No endpoint provided.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -356,8 +366,8 @@ public static class AlbOptions
 
         if (ipCounts.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No hits found for '{Markup.Escape(endpoint)}'.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No hits found for: {endpoint}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -371,16 +381,19 @@ public static class AlbOptions
         foreach (var row in top)
             table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.IP));
 
-        AnsiConsole.Write(new Panel(table) { Header = new PanelHeader($"Top IPs hitting '{endpoint}' (max 50)"), Border = BoxBorder.Rounded });
+        AnsiConsole.Write(new Panel(table)
+        {
+            Header = new PanelHeader($"Top IPs for: {Markup.Escape(endpoint)} (max 50)"),
+            Border = BoxBorder.Rounded
+        });
         AnsiConsole.WriteLine();
 
         var maxRank = top.Max(x => x.Rank);
         var n = AnsiConsole.Prompt(
-            new TextPrompt<int>($"Choose the [bold]LAST rank[/] (1–{maxRank}) to save. Example: 7 saves ranks 1–7.")
+            new TextPrompt<int>($"Save ranks 1 to N (1-{maxRank}):")
                 .Validate(v => v >= 1 && v <= maxRank
                     ? ValidationResult.Success()
-                    : ValidationResult.Error($"Enter a number between 1 and {maxRank}."))
-        );
+                    : ValidationResult.Error($"Enter a number between 1 and {maxRank}.")));
 
         var selected = top.Where(x => x.Rank <= n).ToList();
 
@@ -397,9 +410,9 @@ public static class AlbOptions
             ));
         }
 
-        AnsiConsole.MarkupLine($"Saved top [bold]{n}[/] IP(s) to session list.");
+        ConsoleEx.Success($"Saved {n} item(s) to session selections.");
 
-        var doExport = ConsoleEx.ReadYesNo("Export THESE saved IPs to a file now?", defaultYes: true);
+        var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
@@ -411,10 +424,10 @@ public static class AlbOptions
             foreach (var row in selected)
                 swCsv.WriteLine($"{row.Rank},{row.IP},{row.Hits}");
 
-            AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
+            ConsoleEx.Success($"Exported: {outFile}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // ---------- OPTION 3 ----------
@@ -424,21 +437,21 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Top 50 IPs overall (optimized)",
+        ConsoleEx.Header("ALB: Top 50 IPs overall",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -461,8 +474,8 @@ public static class AlbOptions
 
         if (ipCounts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No IPs found.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No IPs found.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -476,10 +489,14 @@ public static class AlbOptions
         foreach (var row in top)
             table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.IP));
 
-        AnsiConsole.Write(new Panel(table) { Header = new PanelHeader("Top 50 IPs overall"), Border = BoxBorder.Rounded });
+        AnsiConsole.Write(new Panel(table)
+        {
+            Header = new PanelHeader("Top 50 IPs overall"),
+            Border = BoxBorder.Rounded
+        });
         AnsiConsole.WriteLine();
 
-        var doExport = ConsoleEx.ReadYesNo("Export Top 50 IPs to file?", defaultYes: true);
+        var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
@@ -491,10 +508,10 @@ public static class AlbOptions
             foreach (var row in top)
                 swCsv.WriteLine($"{row.Rank},{row.IP},{row.Hits}");
 
-            AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
+            ConsoleEx.Success($"Exported: {outFile}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // ---------- OPTION 4 ----------
@@ -504,21 +521,21 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Top 50 (IP + URI) without query string (optimized)",
+        ConsoleEx.Header("ALB: Top 50 IPs by URI (no query)",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -541,8 +558,8 @@ public static class AlbOptions
 
         if (pairCounts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No results found.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No results found.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -563,10 +580,14 @@ public static class AlbOptions
         foreach (var row in top)
             table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.IP), Markup.Escape(row.URI));
 
-        AnsiConsole.Write(new Panel(table) { Header = new PanelHeader("Top 50 IP + URI (no query)"), Border = BoxBorder.Rounded });
+        AnsiConsole.Write(new Panel(table)
+        {
+            Header = new PanelHeader("Top 50 IP + URI (no query)"),
+            Border = BoxBorder.Rounded
+        });
         AnsiConsole.WriteLine();
 
-        var doExport = ConsoleEx.ReadYesNo("Export Top 50 IP+URI to file?", defaultYes: true);
+        var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
@@ -575,16 +596,17 @@ public static class AlbOptions
 
             using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
             swCsv.WriteLine("Rank,Hits,IP,URI");
+
             foreach (var row in top)
             {
                 var uri = row.URI.Replace("\"", "\"\"");
                 swCsv.WriteLine($"{row.Rank},{row.Hits},{row.IP},\"{uri}\"");
             }
 
-            AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
+            ConsoleEx.Success($"Exported: {outFile}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // ---------- OPTION 5 ----------
@@ -594,40 +616,39 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Requests (no query) ordered by AVG duration, filtered by target",
+        ConsoleEx.Header("ALB: Slow requests by AVG duration (filtered by target)",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var target = ConsoleEx.Prompt("Target (IP or fragment to match, example: 10.0.0.12): ");
+        var target = ConsoleEx.Prompt("Target filter (IP or fragment, e.g., 10.0.0.12):");
         if (string.IsNullOrWhiteSpace(target))
         {
-            AnsiConsole.MarkupLine("[yellow]No target provided.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No target provided.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         InfoPanel("Scan plan",
-            ("Mode", "AVG duration by target (no query URI)"),
+            ("Mode", "AVG duration by target (URI without query)"),
             ("Target filter", target),
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
         var stats = new Dictionary<string, UriAgg>(StringComparer.Ordinal);
-
         var totalBytes = SumFileSizesSafe(files);
 
         await AnsiConsole.Progress()
@@ -700,8 +721,8 @@ public static class AlbOptions
 
         if (stats.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No matches found for target filter:[/] {Markup.Escape(target)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No matches found for target filter: {target}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -735,12 +756,12 @@ public static class AlbOptions
 
         AnsiConsole.Write(new Panel(table)
         {
-            Header = new PanelHeader($"Top 50 URIs (no query), filtered by target '{target}', ordered by AVG duration"),
+            Header = new PanelHeader($"Top 50 URIs (no query) by AVG duration (target filter: {Markup.Escape(target)})"),
             Border = BoxBorder.Rounded
         });
         AnsiConsole.WriteLine();
 
-        var doExport = ConsoleEx.ReadYesNo("Export these results to file?", defaultYes: true);
+        var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
@@ -756,10 +777,10 @@ public static class AlbOptions
                 swCsv.WriteLine($"{r.AvgSeconds:0.000},{r.Count},{r.MaxSeconds:0.000},\"{uriEsc}\"");
             }
 
-            AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
+            ConsoleEx.Success($"Exported: {outFile}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // ---------- OPTION 7 ----------
@@ -769,21 +790,21 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: WAF blocked summary + Top 50 blocked requests",
+        ConsoleEx.Header("ALB: WAF blocked summary",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -829,6 +850,7 @@ public static class AlbOptions
 
                         total++;
 
+                        // Current definition: blocked == NOT "waf,forward"
                         if (!line.Contains("waf,forward", StringComparison.OrdinalIgnoreCase))
                         {
                             blocked++;
@@ -869,12 +891,12 @@ public static class AlbOptions
 
         InfoPanel("Summary",
             ("Total entries parsed", total.ToString("N0")),
-            ("Blocked entries (per definition)", blocked.ToString("N0")));
+            ("Blocked entries", $"{blocked:N0} (entries without 'waf,forward')"));
 
         if (blockedCounts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No blocked requests found (or blocked entries had no parseable IP/URI).[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No blocked requests found (or blocked entries had no parseable IP/URI).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -895,10 +917,14 @@ public static class AlbOptions
         foreach (var row in top)
             table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.IP), Markup.Escape(row.URI));
 
-        AnsiConsole.Write(new Panel(table) { Header = new PanelHeader("Top 50 blocked (IP + URI)"), Border = BoxBorder.Rounded });
+        AnsiConsole.Write(new Panel(table)
+        {
+            Header = new PanelHeader("Top 50 blocked (IP + URI)"),
+            Border = BoxBorder.Rounded
+        });
         AnsiConsole.WriteLine();
 
-        var doExport = ConsoleEx.ReadYesNo("Export blocked Top 50 to file?", defaultYes: true);
+        var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
@@ -913,10 +939,10 @@ public static class AlbOptions
                 swCsv.WriteLine($"{row.Rank},{row.Hits},{row.IP},\"{uri}\"");
             }
 
-            AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
+            ConsoleEx.Success($"Exported: {outFile}");
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // ---------- OPTION 8 ----------
@@ -926,27 +952,26 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: WAF blocked over time (blocks/min) (chart)",
+        ConsoleEx.Header("ALB: WAF blocks over time (per minute)",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
-            AnsiConsole.MarkupLine($"[red]ALB folder not found:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"ALB folder not found: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = AlbScanner.GetLogFiles();
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No .log files found in:[/] {Markup.Escape(albFolder)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No .log files found in: {albFolder}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         // Minute bucket -> blocked count
         var buckets = new SortedDictionary<DateTime, long>();
-
         var totalBytes = SumFileSizesSafe(files);
 
         await AnsiConsole.Progress()
@@ -977,7 +1002,7 @@ public static class AlbOptions
                         if (line is null) break;
                         if (line.Length == 0) continue;
 
-                        // Same "blocked" definition as option 7
+                        // Same blocked definition as the summary view.
                         if (!line.Contains("waf,forward", StringComparison.OrdinalIgnoreCase))
                         {
                             var tsUtc = AlbScanner.ExtractAlbTimestampUtc(line);
@@ -1016,14 +1041,13 @@ public static class AlbOptions
 
         if (buckets.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No blocked entries found (per option 7 definition).[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn("No blocked entries found (per current definition).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         Directory.CreateDirectory(outputFolder);
 
-        // Build series
         var times = buckets.Keys.ToArray();
         var ys = new double[times.Length];
         for (int i = 0; i < times.Length; i++)
@@ -1036,13 +1060,13 @@ public static class AlbOptions
 
         var html = Charts.SaveTimeSeriesHtmlAndOpen(
             outputFolder: outputFolder,
-            title: "ALB WAF blocked over time (blocks/min)",
+            title: "ALB WAF blocks over time (per minute)",
             yLabel: "Blocked requests",
             series: series,
             filePrefix: "ALB_WAF_BlockedPerMin");
 
-        AnsiConsole.MarkupLine($"Chart (offline HTML): [green]{Markup.Escape(html)}[/]");
-        ConsoleEx.Pause();
+        ConsoleEx.Success($"Chart (offline HTML): {html}");
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     private static bool IsLikelyIp(string s)

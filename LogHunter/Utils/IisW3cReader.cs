@@ -1,6 +1,11 @@
-﻿using System.Buffers;
+﻿using System;
+using System.Buffers;
+using System.Collections.Generic;
+using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Utils;
 
@@ -13,7 +18,7 @@ namespace LogHunter.Utils;
 ///
 /// PERF NOTE:
 /// TokenReader returned by ForEachDataLineAsync uses an internal reusable offsets buffer.
-/// It is safe to use inside the callback, but you should not store TokenReader for later use.
+/// It is safe to use inside the callback. Do not store TokenReader for later use.
 /// </summary>
 public static class IisW3cReader
 {
@@ -40,7 +45,7 @@ public static class IisW3cReader
     public readonly struct TokenReader
     {
         private readonly string _line;
-        private readonly int[]? _offsets;   // [start0,len0,start1,len1,...]
+        private readonly int[]? _offsets; // [start0,len0,start1,len1,...]
         private readonly int _count;
 
         // Compatibility constructor (slow path). Prefer ForEachDataLineAsync.
@@ -75,7 +80,7 @@ public static class IisW3cReader
                 return _line.AsSpan(start, len);
             }
 
-            // Slow fallback (kept for safety/compat)
+            // Slow fallback (kept for compatibility)
             int idx = 0;
             int i = 0;
 
@@ -121,7 +126,7 @@ public static class IisW3cReader
         {
             ct.ThrowIfCancellationRequested();
 
-            var line = await reader.ReadLineAsync();
+            var line = await reader.ReadLineAsync().ConfigureAwait(false);
             if (line is null) break;
 
             if (!line.StartsWith("#", StringComparison.Ordinal))
@@ -148,9 +153,10 @@ public static class IisW3cReader
         if (fieldsLine is null || idx is null)
             return null;
 
+        // Keep a basic header so exported files remain readable even if the source lacked one.
         if (header.Count == 0)
         {
-            header.Add("#Software: Microsoft Internet Information Services 10.0");
+            header.Add("#Software: Microsoft Internet Information Services");
             header.Add("#Version: 1.0");
             header.Add($"#Date: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
         }
@@ -183,7 +189,7 @@ public static class IisW3cReader
         try
         {
             string? line;
-            while ((line = await reader.ReadLineAsync()) is not null)
+            while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
             {
                 ct.ThrowIfCancellationRequested();
 
@@ -191,7 +197,6 @@ public static class IisW3cReader
                 if (line[0] == '#') continue;
 
                 int count = TokenizeIntoOffsets(line, ref offsets);
-
                 onLine(line, new TokenReader(line, offsets, count));
             }
         }
@@ -220,7 +225,6 @@ public static class IisW3cReader
                 int p = tokenCount * 2;
                 if (p + 1 >= offsets.Length)
                 {
-                    // grow and retry
                     var bigger = ArrayPool<int>.Shared.Rent(offsets.Length * 2);
                     Array.Copy(offsets, bigger, offsets.Length);
                     ArrayPool<int>.Shared.Return(offsets, clearArray: false);

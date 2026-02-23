@@ -1,9 +1,6 @@
-﻿// Utils/ConsoleEx.cs  (FIXED)
-// Only changes vs your paste:
-// - Added: using System.Linq;  (needed for Skip/Max on IEnumerable in ShowClownEasterEgg)
-// - Tiny safety: guard SetCursorPosition row at the end (avoid negative if a weird terminal reports 0 height)
-using Spectre.Console;
+﻿using Spectre.Console;
 using Spectre.Console.Rendering;
+using System;
 using System.Linq;
 using System.Text;
 
@@ -58,11 +55,11 @@ public static class ConsoleEx
     public static bool ReadYesNo(string prompt, bool defaultYes = true)
         => AnsiConsole.Confirm(Escape(prompt), defaultYes);
 
-    public static void Pause(string msg = "Press ENTER to continue...")
+    public static void Pause(string msg = "Press Enter to continue...")
     {
         AnsiConsole.MarkupLine($"[grey]{Escape(msg)}[/]");
 
-        // Use Spectre input. In your Spectre version this returns ConsoleKeyInfo?
+        // Spectre input (your Spectre version returns ConsoleKeyInfo?)
         while (true)
         {
             var maybe = AnsiConsole.Console.Input.ReadKey(intercept: true);
@@ -79,8 +76,8 @@ public static class ConsoleEx
     // ---------- Cancellable line input (Esc cancels) ----------
 
     /// <summary>
-    /// Reads a line from the console with basic editing. ESC cancels and returns null.
-    /// ENTER accepts and returns the trimmed string (may be empty).
+    /// Reads a line with basic editing. ESC cancels and returns null.
+    /// ENTER accepts and returns the string (trimmed by default).
     /// </summary>
     public static string? ReadLineWithEsc(string label, bool trim = true)
     {
@@ -143,9 +140,9 @@ public static class ConsoleEx
     public sealed record MenuItem(string Label, string Hint);
 
     /// <summary>
-    /// Renders a menu with a dynamic hint box + a keys box on the bottom.
-    /// Keys: Up/Down move, 1-9 jump highlight (does NOT select), Enter selects, Esc returns null.
-    /// Returns selected index or null if cancelled/back.
+    /// Renders a menu with a hint box + keys box.
+    /// Keys: Up/Down move, 1-9 jump highlight (does not select), Enter selects, Esc returns null.
+    /// Returns selected index or null if cancelled.
     /// </summary>
     public static int? Menu(string title, IReadOnlyList<MenuItem> items, int pageSize = 12)
     {
@@ -161,7 +158,7 @@ public static class ConsoleEx
             .AutoClear(true)
             .Start(ctx =>
             {
-                // IMPORTANT: force first paint (fixes “blank until keypress”)
+                // Force first paint (fixes “blank until keypress”)
                 ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
                 ctx.Refresh();
 
@@ -297,8 +294,8 @@ public static class ConsoleEx
 
     private static IRenderable BuildKeysPanel()
     {
-        // Some terminals/fonts are weird with arrows; fall back if needed.
-        var upDown = AnsiConsole.Profile.Capabilities.Unicode ? "↑/↓" : "Up/Down";
+        // Keep it ASCII-friendly.
+        const string upDown = "Up/Down";
 
         var t = new Table()
             .NoBorder()
@@ -306,7 +303,7 @@ public static class ConsoleEx
             .AddColumn(new TableColumn("").NoWrap());
 
         t.AddRow("[grey]Enter[/]", "[grey]Select[/]");
-        t.AddRow($"[grey]{Escape(upDown)}[/]", "[grey]Move[/]");
+        t.AddRow($"[grey]{upDown}[/]", "[grey]Move[/]");
         t.AddRow("[grey]1-9[/]", "[grey]Jump highlight[/]");
         t.AddRow("[grey]Esc[/]", "[grey]Back[/]");
 
@@ -327,7 +324,8 @@ public static class ConsoleEx
         int filled = (int)Math.Round((percent / 100.0) * barWidth);
         filled = Math.Clamp(filled, 0, barWidth);
 
-        var bar = new string('█', filled) + new string('░', barWidth - filled);
+        // ASCII-friendly bar.
+        var bar = new string('#', filled) + new string('-', barWidth - filled);
 
         AnsiConsole.Markup($"\r{Escape(label)} [{bar}] {percent,6:0.0}%");
 
@@ -397,7 +395,7 @@ public static class ConsoleEx
                  '-...-'
 ";
 
-        // Use raw Console to avoid any wrapping/reflow
+        // Raw Console to avoid any reflow/wrapping.
         Console.CursorVisible = false;
         try
         {
@@ -433,7 +431,6 @@ public static class ConsoleEx
                 if (y < 1 || y >= h - 1) continue;
 
                 var line = lines[i];
-
                 if (line.Length > w)
                     line = line[..w];
 
@@ -444,7 +441,6 @@ public static class ConsoleEx
 
             WriteCentered(h - 1, "BOOMER");
 
-            // safety: if some terminal lies about height, don't go negative
             var lastRow = Math.Max(0, Console.WindowHeight - 1);
             Console.SetCursorPosition(0, lastRow);
             Console.ReadLine();

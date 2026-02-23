@@ -1,0 +1,6 @@
+{
+  "apiKey": null,
+  "maxAgeInDays": 30,
+  "verbose": false,
+  "timeoutSeconds": 30
+}

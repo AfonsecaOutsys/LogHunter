@@ -27,11 +27,12 @@ public static class SpectreDateTimePicker
             AnsiConsole.Clear();
 
             var help =
-                "[grey]←/→ field   ↑/↓ change   Enter confirm   Esc cancel[/]\n" +
-                "[grey]Minute changes in 5-min steps (UTC)[/]";
+                "[grey]Left/Right: field   Up/Down: change   Enter: confirm   Esc: cancel[/]\n" +
+                "[grey]Minutes change in 5-minute steps (UTC).[/]";
+
             AnsiConsole.Write(new Panel(help)
             {
-                Header = new PanelHeader(label),
+                Header = new PanelHeader(Markup.Escape(label)),
                 Border = BoxBorder.Rounded
             });
 
@@ -76,7 +77,7 @@ public static class SpectreDateTimePicker
         var h = Y(dtUtc.Hour.ToString("D2"), Field.Hour);
         var mm = Y(dtUtc.Minute.ToString("D2"), Field.Minute);
 
-        return $"[bold]Selected:[/] {y}-" + $"{m}-" + $"{d}  {h}:{mm}  [grey]UTC[/]";
+        return $"[bold]Selected:[/] {y}-{m}-{d}  {h}:{mm}  [grey]UTC[/]";
     }
 
     private static DateTime Adjust(DateTime dtUtc, Field field, int delta) =>

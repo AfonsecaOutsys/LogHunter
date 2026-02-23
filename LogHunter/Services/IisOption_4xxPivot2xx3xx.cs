@@ -1,7 +1,13 @@
 ﻿using LogHunter.Models;
 using LogHunter.Utils;
 using Spectre.Console;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
@@ -11,29 +17,29 @@ public static class IisOption_4xxPivot2xx3xx
 
     /// <summary>
     /// Flow:
-    ///  Pass 1: scan IIS logs for 4xx per (real) IP -> show Top 15 with per-status breakdown.
-    ///  Pick suspicious IPs -> Pass 2: export all 2xx/3xx lines for those IPs to a W3C .log + show pivot summary.
+    ///  Pass 1: scan IIS logs for 4xx per (real) public IP -> show Top 15 with per-status breakdown.
+    ///  Select suspicious IPs -> Pass 2: export all 2xx/3xx lines for those IPs to a W3C .log + show a pivot summary.
     ///
     /// Input folder:  {root}\IIS
     /// Output folder: {root}\output
     /// </summary>
     public static async Task RunAsync(string root, CancellationToken ct = default)
     {
-        ConsoleEx.Header("IIS: 4xx → pick suspicious IPs → pivot to 2xx/3xx");
+        ConsoleEx.Header("IIS: 4xx -> select IPs -> pivot to 2xx/3xx");
 
         var iisDir = Path.Combine(root, "IIS");
         if (!Directory.Exists(iisDir))
         {
-            AnsiConsole.MarkupLine($"[red]Missing IIS folder:[/] {Markup.Escape(iisDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"Missing IIS folder: {iisDir}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = IisW3cReader.EnumerateLogFiles(iisDir);
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No IIS logs found[/] under: {Markup.Escape(iisDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No IIS logs found under: {iisDir}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -49,16 +55,16 @@ public static class IisOption_4xxPivot2xx3xx
 
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Pass 1/2: scanning 4xx…", async ctx =>
+            .StartAsync("Pass 1/2: scanning 4xx...", async ctx =>
             {
                 for (var f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Pass 1/2: scanning 4xx… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Pass 1/2: scanning 4xx... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null)
                         continue;
 
@@ -79,7 +85,7 @@ public static class IisOption_4xxPivot2xx3xx
                         if (status < 400 || status > 499)
                             return;
 
-                        // Ignore ELB health checker noise
+                        // Ignore health checker noise
                         if (iUA >= 0)
                         {
                             var ua = tokens.Get(iUA);
@@ -98,7 +104,7 @@ public static class IisOption_4xxPivot2xx3xx
                         if (ip is null)
                             return;
 
-                        // Default: exclude private/loopback to focus on real clients
+                        // Focus on public clients
                         if (IsPrivateOrLoopback(ip))
                             return;
 
@@ -109,14 +115,14 @@ public static class IisOption_4xxPivot2xx3xx
                         }
 
                         s.Add(status);
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
 
         if (statsByIp.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No public-client 4xx traffic found (after filters).[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No public-client 4xx traffic found (after filters).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -142,13 +148,13 @@ public static class IisOption_4xxPivot2xx3xx
 
         // ---------- Pick suspicious IPs ----------
         var pick = new MultiSelectionPrompt<IpPick>()
-            .Title("Select IP(s) to mark as suspicious (pivot to 2xx/3xx)")
+            .Title("Select IPs to pivot (2xx/3xx)")
             .NotRequired()
             .PageSize(16)
-            .InstructionsText("[grey](Space to toggle, Enter to confirm)[/]")
+            .InstructionsText("[grey](Space: toggle, Enter: confirm)[/]")
             .UseConverter(p => p.Display);
 
-        // "Select ALL" pseudo-choice (we interpret it after the prompt)
+        // "Select ALL" pseudo-choice (handled after the prompt)
         pick.AddChoice(new IpPick(
             SelectAllSentinel,
             "[bold][[Select ALL]][/] Select all IPs shown above (Top 15)"
@@ -160,8 +166,8 @@ public static class IisOption_4xxPivot2xx3xx
         var selected = AnsiConsole.Prompt(pick);
         if (selected.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No IPs selected.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -190,30 +196,30 @@ public static class IisOption_4xxPivot2xx3xx
         if (firstMap is not null)
         {
             foreach (var h in firstMap.HeaderLines)
-                await outWriter.WriteLineAsync(h);
+                await outWriter.WriteLineAsync(h).ConfigureAwait(false);
 
-            await outWriter.WriteLineAsync(firstMap.FieldsLine);
+            await outWriter.WriteLineAsync(firstMap.FieldsLine).ConfigureAwait(false);
         }
         else
         {
-            // Fallback minimal header (should be rare)
-            await outWriter.WriteLineAsync("#Software: Microsoft Internet Information Services 10.0");
-            await outWriter.WriteLineAsync("#Version: 1.0");
-            await outWriter.WriteLineAsync($"#Date: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
+            // Fallback minimal header (rare)
+            await outWriter.WriteLineAsync("#Software: Microsoft Internet Information Services 10.0").ConfigureAwait(false);
+            await outWriter.WriteLineAsync("#Version: 1.0").ConfigureAwait(false);
+            await outWriter.WriteLineAsync($"#Date: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}").ConfigureAwait(false);
         }
 
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Pass 2/2: exporting 2xx/3xx for selected IPs…", async ctx =>
+            .StartAsync("Pass 2/2: exporting 2xx/3xx for selected IPs...", async ctx =>
             {
                 for (var f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Pass 2/2: exporting 2xx/3xx… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Pass 2/2: exporting 2xx/3xx... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null)
                         continue;
 
@@ -242,11 +248,11 @@ public static class IisOption_4xxPivot2xx3xx
                         if (!selectedIps.Contains(ip))
                             return;
 
-                        // export raw line
+                        // Export raw line
                         outWriter.WriteLine(rawLine);
                         exportedLines++;
 
-                        // update pivot stats
+                        // Update pivot stats
                         var res = pivot[ip];
                         res.Add(status);
 
@@ -256,11 +262,11 @@ public static class IisOption_4xxPivot2xx3xx
                             if (!uri.IsEmpty && uri[0] != '-')
                                 res.AddUri(uri.ToString());
                         }
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
 
-        await outWriter.FlushAsync();
+        await outWriter.FlushAsync().ConfigureAwait(false);
 
         // ---------- Show pivot summary ----------
         ConsoleEx.Header("IIS: Pivot results (2xx/3xx)");
@@ -294,7 +300,7 @@ public static class IisOption_4xxPivot2xx3xx
             AnsiConsole.WriteLine();
         }
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // -------------------- Helpers --------------------

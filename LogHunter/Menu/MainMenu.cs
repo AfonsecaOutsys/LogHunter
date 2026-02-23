@@ -2,6 +2,9 @@
 using LogHunter.Services;
 using LogHunter.Utils;
 using Spectre.Console;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Menus;
 
@@ -13,27 +16,48 @@ public sealed class MainMenu : IMenu
 
     public Task<IMenu?> ShowAsync(CancellationToken ct = default)
     {
-        ConsoleEx.Header("LogHunter (POC)", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("LogHunter", $"Workspace: {_session.Root}");
 
         var savedCount = _session.SavedSelections.Count;
 
         var items = new[]
         {
-            new ConsoleEx.MenuItem("ALB", "AWS Application Load Balancer log tools.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("IIS", "IIS log analysis tools.\n(Placeholder hint for now)"),
-            new ConsoleEx.MenuItem("Platform", "OutSystems platform log analysis tools.\nSuspicious requests, errors, trends, and more."),
+            new ConsoleEx.MenuItem(
+                "ALB",
+                "AWS Application Load Balancer logs.\nDownload, scan, and summarize traffic."),
 
-            new ConsoleEx.MenuItem("Check IP Report (AbuseIP)", "Query AbuseIPDB for reputation details on one or more IPs.\n(Placeholder hint)"),
+            new ConsoleEx.MenuItem(
+                "IIS",
+                "IIS W3C logs.\nBursts, status-code pivots, bandwidth, and payload intel."),
 
-            new ConsoleEx.MenuItem($"Show saved selections ({savedCount})", "View items saved during this session.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem($"Export ALL saved selections ({savedCount})", "Export all saved selections to CSV under /output.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem($"Clear saved selections ({savedCount})", "Clear all saved selections for this session.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Exit", "Quit LogHunter.")
+            new ConsoleEx.MenuItem(
+                "Platform",
+                "OutSystems Platform logs.\nSuspicious request patterns and authenticated-activity checks."),
+
+            new ConsoleEx.MenuItem(
+                "IP reputation (AbuseIPDB)",
+                "Check IP reputation and export results to CSV."),
+
+            new ConsoleEx.MenuItem(
+                $"Saved selections ({savedCount})",
+                "View items saved in this session."),
+
+            new ConsoleEx.MenuItem(
+                $"Export saved selections ({savedCount})",
+                "Export all saved selections to CSV in the output folder."),
+
+            new ConsoleEx.MenuItem(
+                $"Clear saved selections ({savedCount})",
+                "Remove all saved selections from this session."),
+
+            new ConsoleEx.MenuItem(
+                "Exit",
+                "Quit LogHunter.")
         };
 
-        var selected = ConsoleEx.Menu("Select an option:", items, pageSize: 10);
+        var selected = ConsoleEx.Menu("Main menu", items, pageSize: 10);
 
-        // Esc = exit (main menu)
+        // Esc exits from the main menu.
         if (selected is null)
             return Task.FromResult<IMenu?>(null);
 
@@ -52,53 +76,56 @@ public sealed class MainMenu : IMenu
                 return Task.FromResult<IMenu?>(new AbuseIpMenu(_session));
 
             case 4:
-                ConsoleEx.Header("Saved selections");
+                ConsoleEx.Header("Saved selections", $"Count: {savedCount}");
+
                 if (savedCount == 0)
                     AnsiConsole.MarkupLine("[grey](no saved selections)[/]");
                 else
                     SelectionService.ShowSavedSelections(_session.SavedSelections);
 
-                ConsoleEx.Pause();
+                ConsoleEx.Pause("Press Enter to return...");
                 return Task.FromResult<IMenu?>(this);
 
             case 5:
-                ConsoleEx.Header("Export saved selections");
+                ConsoleEx.Header("Export saved selections", $"Count: {savedCount}");
+
                 if (savedCount == 0)
                 {
                     AnsiConsole.MarkupLine("[grey](no saved selections to export)[/]");
-                    ConsoleEx.Pause();
+                    ConsoleEx.Pause("Press Enter to return...");
                     return Task.FromResult<IMenu?>(this);
                 }
 
-                var outDir = Path.Combine(_session.Root, "output");
+                var outDir = AppFolders.Output; // consistent location
                 SelectionService.ExportAll(outDir, _session.SavedSelections);
 
-                AnsiConsole.MarkupLine("[green]Export complete[/]");
+                ConsoleEx.Success("Export complete.");
                 AnsiConsole.MarkupLine($"[dim]Output:[/] {Markup.Escape(outDir)}");
 
-                ConsoleEx.Pause();
+                ConsoleEx.Pause("Press Enter to return...");
                 return Task.FromResult<IMenu?>(this);
 
             case 6:
-                ConsoleEx.Header("Clear saved selections");
+                ConsoleEx.Header("Clear saved selections", $"Count: {savedCount}");
+
                 if (savedCount == 0)
                 {
                     AnsiConsole.MarkupLine("[grey](no saved selections to clear)[/]");
-                    ConsoleEx.Pause();
+                    ConsoleEx.Pause("Press Enter to return...");
                     return Task.FromResult<IMenu?>(this);
                 }
 
-                if (ConsoleEx.ReadYesNo("Clear ALL saved selections for this session?", defaultYes: false))
+                if (ConsoleEx.ReadYesNo("Clear all saved selections for this session?", defaultYes: false))
                 {
                     SelectionService.ClearSavedSelections(_session.SavedSelections);
-                    AnsiConsole.MarkupLine("[green]Cleared[/]");
+                    ConsoleEx.Success("Cleared.");
                 }
                 else
                 {
-                    AnsiConsole.MarkupLine("[grey](cancelled)[/]");
+                    ConsoleEx.Info("Cancelled.");
                 }
 
-                ConsoleEx.Pause();
+                ConsoleEx.Pause("Press Enter to return...");
                 return Task.FromResult<IMenu?>(this);
 
             case 7:

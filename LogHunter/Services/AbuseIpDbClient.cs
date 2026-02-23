@@ -1,9 +1,14 @@
-﻿using System.Globalization;
+﻿using System;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
@@ -11,6 +16,7 @@ public sealed class AbuseIpDbClient : IDisposable
 {
     // Put your company key here (internal tool).
     // Users can override via /AbuseIP/config.json OR per-run prompt.
+    // NOTE: leaving this value exactly as-is per your request.
     private const string DefaultApiKey = "a1f11549914313f6db7572eafcacc897ed33c0473a1e9b67e1af0607b47a95f07589745d7e2a6034";
 
     private const string ConfigDirName = "AbuseIP";
@@ -55,6 +61,9 @@ public sealed class AbuseIpDbClient : IDisposable
         // AbuseIPDB expects header name "Key" for the API key.
         _http.DefaultRequestHeaders.Remove("Key");
         _http.DefaultRequestHeaders.Add("Key", apiKey);
+
+        // Avoid any pager-like behavior in tooling that might share env
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("LogHunter/1.0");
     }
 
     public void Dispose() => _http.Dispose();
@@ -70,7 +79,7 @@ public sealed class AbuseIpDbClient : IDisposable
         url.Append("api/v2/check?ipAddress=");
         url.Append(Uri.EscapeDataString(ipAddress.Trim()));
         url.Append("&maxAgeInDays=");
-        url.Append(maxAgeInDays);
+        url.Append(maxAgeInDays.ToString(CultureInfo.InvariantCulture));
 
         if (verbose)
             url.Append("&verbose");
@@ -95,7 +104,7 @@ public sealed class AbuseIpDbClient : IDisposable
                 if (rl.Remaining == 0)
                     throw new AbuseIpQuotaExceededException(rl);
 
-                // otherwise, transient backoff
+                // Otherwise, transient backoff
                 var delay = rl.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(10, 1 << (attempt - 1))); // 1,2,4
                 await Task.Delay(delay, ct).ConfigureAwait(false);
                 continue;
@@ -115,7 +124,7 @@ public sealed class AbuseIpDbClient : IDisposable
             var d = parsed.Data;
 
             return new AbuseIpCheckResult(
-                IpAddress: d.IpAddress ?? ipAddress,
+                IpAddress: d.IpAddress ?? ipAddress.Trim(),
                 AbuseConfidenceScore: d.AbuseConfidenceScore,
                 TotalReports: d.TotalReports,
                 CountryCode: d.CountryCode,
@@ -137,9 +146,8 @@ public sealed class AbuseIpDbClient : IDisposable
             if (!File.Exists(path))
                 return AbuseIpConfig.Default;
 
-            var json = File.ReadAllText(path);
+            var json = File.ReadAllText(path, Encoding.UTF8);
             var cfg = JsonSerializer.Deserialize<AbuseIpConfig>(json, JsonOpts);
-
             return cfg ?? AbuseIpConfig.Default;
         }
         catch
@@ -160,25 +168,30 @@ public sealed class AbuseIpDbClient : IDisposable
             WriteIndented = true
         });
 
-        File.WriteAllText(path, json);
+        File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
     public static string GetConfigPath(string workspaceRoot)
         => Path.Combine(workspaceRoot, ConfigDirName, ConfigFileName);
 
     // ---------------------------
-    // CSV export (now with ScoreBand)
+    // CSV export (includes ScoreBand)
     // ---------------------------
+
     public static void ExportResultsCsv(string path, IEnumerable<AbuseIpCheckResult> results)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         using var sw = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-        sw.WriteLine("IpAddress,AbuseConfidenceScore,ScoreBand,TotalReports,CountryCode,UsageType,ISP,Domain,LastReportedAt");
+        sw.WriteLine("IpAddress,AbuseConfidenceScore,ScoreBand,TotalReports,CountryCode,UsageType,ISP,Domain,LastReportedAtUtc");
 
         foreach (var r in results)
         {
+            var last = r.LastReportedAt is null
+                ? ""
+                : r.LastReportedAt.Value.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+
             sw.WriteLine(string.Join(",",
                 Csv(r.IpAddress),
                 r.AbuseConfidenceScore.ToString(CultureInfo.InvariantCulture),
@@ -188,7 +201,7 @@ public sealed class AbuseIpDbClient : IDisposable
                 Csv(r.UsageType),
                 Csv(r.Isp),
                 Csv(r.Domain),
-                Csv(r.LastReportedAt?.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z")
+                Csv(last)
             ));
         }
     }
@@ -207,7 +220,7 @@ public sealed class AbuseIpDbClient : IDisposable
         if (string.IsNullOrEmpty(s))
             return "";
 
-        var needsQuotes = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        var needsQuotes = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
         if (!needsQuotes) return s;
 
         return "\"" + s.Replace("\"", "\"\"") + "\"";
@@ -252,7 +265,7 @@ public sealed class AbuseIpDbClient : IDisposable
     }
 
     private static string TrimForError(string s)
-        => s.Length <= 500 ? s : s[..500] + "…";
+        => s.Length <= 500 ? s : s[..500] + "...";
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

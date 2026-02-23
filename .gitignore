@@ -2,41 +2,37 @@
 # LogHunter - ignore local data + generated artifacts
 ############################################################
 
-# --- Logs / data files you don't want shared ---
+# --- Runtime folders (tool workspace data) ---
+/output/
+/ALB/
+/IIS/
+/PlatformLogs/
+/platformlogs/   # keep both, just in case casing differs on some machines
+
+# --- Logs / data files (don’t share) ---
 *.log
+*.log.gz
 *.csv
 *.xlsx
 *.xls
-
-# (optional) other common data dumps
-*.txt
-*.gz
+*.har
 *.zip
 *.7z
-*.json
 
-# --- Runtime folders (your tool creates these) ---
-output/
-ALB/
-IIS/
-PlatformLogs/
+# If you really want to ignore all .txt, keep this.
+# Otherwise, comment it out so docs can be committed.
+*.txt
 
 # --- Build outputs ---
-bin/
-obj/
-[Bb]uild/
-[Dd]ebug/
-[Rr]elease/
-x64/
-x86/
-[Aa]ny[Cc][Pp][Uu]/
+/bin/
+/obj/
 artifacts/
 publish/
 
 # --- IDE / user files ---
-.vs/
-.idea/
-.vscode/
+/.vs/
+/.idea/
+/.vscode/
 *.suo
 *.user
 *.userosscache

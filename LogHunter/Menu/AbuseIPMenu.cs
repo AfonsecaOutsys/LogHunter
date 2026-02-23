@@ -20,10 +20,10 @@ public sealed class AbuseIpMenu : IMenu
 
     public async Task<IMenu?> ShowAsync(CancellationToken ct = default)
     {
-        ConsoleEx.Header("AbuseIP", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("AbuseIPDB", $"Workspace: {_session.Root}");
 
         var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
-        var keySource = string.IsNullOrWhiteSpace(cfg.ApiKey) ? "hard-coded default" : "config override";
+        var keySource = string.IsNullOrWhiteSpace(cfg.ApiKey) ? "built-in default" : "config file";
 
         var burstCount = _session.IisBurstIps?.Count ?? 0;
         var burstUpdated = _session.IisBurstIpsUpdatedUtc is null
@@ -38,25 +38,33 @@ public sealed class AbuseIpMenu : IMenu
         var items = new[]
         {
             new ConsoleEx.MenuItem(
-                "Check IPs from /output (CSV)",
-                $"Pick a recent CSV from /output, extract the IP column, and check selected IPs.\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
+                "Check IPs from output CSV",
+                "Pick a CSV from /output, detect an IP column, select IPs and run checks.\n" +
+                $"API key: {keySource}\n" +
+                $"maxAgeInDays: {cfg.MaxAgeInDays}"),
 
             new ConsoleEx.MenuItem(
-                $"Check IPs from IIS Bursts Session ({burstCount})",
-                $"Uses the last saved burst IP set from IIS → Find Bursts Patterns.\nLast updated: {burstUpdated}\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
+                $"Check IPs from IIS burst session ({burstCount})",
+                "Uses the last saved burst IP set from IIS -> Burst patterns.\n" +
+                $"Last updated: {burstUpdated}\n" +
+                $"API key: {keySource}\n" +
+                $"maxAgeInDays: {cfg.MaxAgeInDays}"),
 
             new ConsoleEx.MenuItem(
-                $"Check IPs from Platform Suspicious Session ({platCount})",
-                $"Uses the last saved IP set from Platform → Suspicious requests → extract IPs.\nLast updated: {platUpdated}\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
+                $"Check IPs from Platform suspicious cache ({platCount})",
+                "Uses the last saved IP set from Platform -> Suspicious requests: extract IPs.\n" +
+                $"Last updated: {platUpdated}\n" +
+                $"API key: {keySource}\n" +
+                $"maxAgeInDays: {cfg.MaxAgeInDays}"),
 
             new ConsoleEx.MenuItem(
-                "Set/Update API key (writes config)",
-                $"Stores settings in: {AbuseIpDbClient.GetConfigPath(_session.Root)}"),
+                "Set or update API key (writes config)",
+                $"Config file: {AbuseIpDbClient.GetConfigPath(_session.Root)}"),
 
-            new ConsoleEx.MenuItem("Back", "Return to Main Menu.")
+            new ConsoleEx.MenuItem("Back", "Return to the main menu.")
         };
 
-        var selected = ConsoleEx.Menu("Select an option:", items, pageSize: 10);
+        var selected = ConsoleEx.Menu("AbuseIPDB menu", items, pageSize: 10);
 
         // Esc = back
         if (selected is null)
@@ -90,7 +98,7 @@ public sealed class AbuseIpMenu : IMenu
 
     private async Task ConfigureAsync(CancellationToken ct)
     {
-        ConsoleEx.Header("AbuseIP • Config", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("AbuseIPDB: config", $"Workspace: {_session.Root}");
 
         var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
         var path = AbuseIpDbClient.GetConfigPath(_session.Root);
@@ -99,7 +107,7 @@ public sealed class AbuseIpMenu : IMenu
         AnsiConsole.WriteLine();
 
         var key = AnsiConsole.Prompt(
-            new TextPrompt<string>("API key (leave empty to remove override and use hard-coded default):")
+            new TextPrompt<string>("API key (leave empty to use built-in default):")
                 .AllowEmpty()
                 .Secret());
 
@@ -109,8 +117,8 @@ public sealed class AbuseIpMenu : IMenu
                 .ValidationErrorMessage("Enter a number between 1 and 365.")
                 .Validate(v => v is >= 1 and <= 365));
 
-        // Avoid ConfirmationPrompt.DefaultValue() API differences across Spectre versions
-        var verbose = AnsiConsole.Confirm("Include verbose reports payload? (heavier response)", cfg.Verbose);
+        // Avoid API differences across Spectre versions
+        var verbose = AnsiConsole.Confirm("Include verbose report payload? (heavier response)", cfg.Verbose);
 
         var updated = cfg with
         {
@@ -121,14 +129,14 @@ public sealed class AbuseIpMenu : IMenu
 
         AbuseIpDbClient.SaveConfig(_session.Root, updated);
 
-        AnsiConsole.MarkupLine("[green]Saved[/]");
-        ConsoleEx.Pause();
+        ConsoleEx.Success("Saved.");
+        ConsoleEx.Pause("Press Enter to return...");
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
     private async Task CheckFromIisBurstSessionAsync(CancellationToken ct)
     {
-        ConsoleEx.Header("AbuseIP • IIS Bursts Session", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("AbuseIPDB: IIS burst session", $"Workspace: {_session.Root}");
 
         var set = _session.IisBurstIps;
         var updated = _session.IisBurstIpsUpdatedUtc;
@@ -136,8 +144,8 @@ public sealed class AbuseIpMenu : IMenu
         if (set is null || set.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey](no burst IPs saved in session)[/]");
-            AnsiConsole.MarkupLine("[dim]Run IIS → Find Bursts Patterns and choose to save burst IPs to session.[/]");
-            ConsoleEx.Pause();
+            AnsiConsole.MarkupLine("[dim]Run IIS -> Burst patterns and choose to save burst IPs to session.[/]");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -145,7 +153,7 @@ public sealed class AbuseIpMenu : IMenu
         AnsiConsole.MarkupLine($"[dim]Last updated:[/] {(updated is null ? "unknown" : updated.Value.ToString("yyyy-MM-dd HH:mm:ss") + "Z")}");
         AnsiConsole.WriteLine();
 
-        // Keep selection list manageable (like CSV path)
+        // Keep selection list manageable (UI), but allow Select ALL to check the full set.
         var choices = set
             .OrderBy(ip => ip, StringComparer.OrdinalIgnoreCase)
             .Take(800)
@@ -154,29 +162,24 @@ public sealed class AbuseIpMenu : IMenu
 
         var selectedIps = AnsiConsole.Prompt(
             new MultiSelectionPrompt<IpChoice>()
-                .Title("Select IPs to check (space to toggle, enter to run):")
+                .Title("Select IPs to check:")
                 .PageSize(18)
                 .WrapAround()
                 .NotRequired()
-                .InstructionsText("[grey](tip: include [[Select ALL]] to quickly pick everything; list is capped to first 800 IPs)[/]")
+                .InstructionsText("[grey](Space: toggle, Enter: run. List is capped to first 800; Select ALL checks the full set.)[/]")
                 .AddChoices(new[] { new IpChoice(SelectAllSentinel, -1) }.Concat(choices))
-                .UseConverter(x =>
-                {
-                    if (x.Ip == SelectAllSentinel) return "[bold][[Select ALL]][/]";
-                    return x.Ip;
-                }));
+                .UseConverter(x => x.Ip == SelectAllSentinel ? "[bold][[Select ALL]][/]" : x.Ip));
 
         if (selectedIps.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         List<string> ipsToCheck;
         if (selectedIps.Any(x => x.Ip == SelectAllSentinel))
         {
-            // check full set (not just the capped list)
             ipsToCheck = set.OrderBy(ip => ip, StringComparer.OrdinalIgnoreCase).ToList();
         }
         else
@@ -188,21 +191,21 @@ public sealed class AbuseIpMenu : IMenu
                 .ToList();
         }
 
-        await CheckIpsAsync(ipsToCheck, sourceLabel: "IIS Bursts Session", ct).ConfigureAwait(false);
+        await CheckIpsAsync(ipsToCheck, sourceLabel: "IIS burst session", ct).ConfigureAwait(false);
     }
 
     private async Task CheckFromPlatformSuspiciousSessionAsync(CancellationToken ct)
     {
-        ConsoleEx.Header("AbuseIP • Platform Suspicious Session", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("AbuseIPDB: Platform suspicious cache", $"Workspace: {_session.Root}");
 
         var dict = _session.PlatformSuspiciousIpHits;
         var updated = _session.PlatformSuspiciousIpHitsUpdatedUtc;
 
         if (dict is null || dict.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey](no platform suspicious IPs saved in session)[/]");
-            AnsiConsole.MarkupLine("[dim]Run Platform → Suspicious requests → extract IPs to populate this session set.[/]");
-            ConsoleEx.Pause();
+            AnsiConsole.MarkupLine("[grey](no Platform suspicious IPs saved in session)[/]");
+            AnsiConsole.MarkupLine("[dim]Run Platform -> Suspicious requests: extract IPs to populate this cache.[/]");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -219,11 +222,11 @@ public sealed class AbuseIpMenu : IMenu
 
         var selectedIps = AnsiConsole.Prompt(
             new MultiSelectionPrompt<IpChoice>()
-                .Title("Select IPs to check (space to toggle, enter to run):")
+                .Title("Select IPs to check:")
                 .PageSize(18)
                 .WrapAround()
                 .NotRequired()
-                .InstructionsText("[grey](tip: include [[Select ALL]] to quickly pick everything; list is capped to top 800 by hits)[/]")
+                .InstructionsText("[grey](Space: toggle, Enter: run. List is capped to top 800; Select ALL checks the full set.)[/]")
                 .AddChoices(new[] { new IpChoice(SelectAllSentinel, -1) }.Concat(choices))
                 .UseConverter(x =>
                 {
@@ -234,7 +237,7 @@ public sealed class AbuseIpMenu : IMenu
         if (selectedIps.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -252,18 +255,18 @@ public sealed class AbuseIpMenu : IMenu
                 .ToList();
         }
 
-        await CheckIpsAsync(ipsToCheck, sourceLabel: "Platform Suspicious Session", ct).ConfigureAwait(false);
+        await CheckIpsAsync(ipsToCheck, sourceLabel: "Platform suspicious cache", ct).ConfigureAwait(false);
     }
 
     private async Task CheckFromOutputCsvAsync(CancellationToken ct)
     {
-        ConsoleEx.Header("AbuseIP • Select CSV", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("AbuseIPDB: select CSV", $"Workspace: {_session.Root}");
 
-        var outDir = Path.Combine(_session.Root, "output");
+        var outDir = AppFolders.Output;
         if (!Directory.Exists(outDir))
         {
             AnsiConsole.MarkupLine($"[yellow]/output folder not found[/] at: {Markup.Escape(outDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -276,15 +279,13 @@ public sealed class AbuseIpMenu : IMenu
         if (files.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey](no .csv files found in /output)[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        // IMPORTANT: keep display line short to avoid console wrapping (wrapping can cause beeps in some hosts)
+        // Keep display line short to avoid wrapping issues in some hosts.
         var choices = files
-            .Select(f => new FileChoice(
-                f.FullName,
-                BuildFileDisplay(f)))
+            .Select(f => new FileChoice(f.FullName, BuildFileDisplay(f)))
             .ToList();
 
         var picked = AnsiConsole.Prompt(
@@ -295,7 +296,7 @@ public sealed class AbuseIpMenu : IMenu
                 .AddChoices(choices)
                 .UseConverter(x => x.Display));
 
-        ConsoleEx.Header("AbuseIP • Extract IPs", picked.FullPath);
+        ConsoleEx.Header("AbuseIPDB: extract IPs", Path.GetFileName(picked.FullPath));
 
         if (!TryExtractIpCounts(
                 csvPath: picked.FullPath,
@@ -304,7 +305,7 @@ public sealed class AbuseIpMenu : IMenu
                 out var error))
         {
             AnsiConsole.MarkupLine($"[red]Failed[/]: {Markup.Escape(error)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -323,18 +324,18 @@ public sealed class AbuseIpMenu : IMenu
 
         var selectedIps = AnsiConsole.Prompt(
             new MultiSelectionPrompt<IpChoice>()
-                .Title("Select IPs to check (space to toggle, enter to run):")
+                .Title("Select IPs to check:")
                 .PageSize(18)
                 .WrapAround()
                 .NotRequired()
-                .InstructionsText("[grey](tip: pick from the top list above; selection list is capped to top 400 by hits)[/]")
+                .InstructionsText("[grey](Space: toggle, Enter: run. List is capped to top 400 by hits.)[/]")
                 .AddChoices(topChoices)
                 .UseConverter(x => $"{x.Ip} [grey]({x.Hits})[/]"));
 
         if (selectedIps.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -344,7 +345,7 @@ public sealed class AbuseIpMenu : IMenu
 
     private async Task CheckIpsAsync(List<string> ipsToCheck, string sourceLabel, CancellationToken ct)
     {
-        ConsoleEx.Header("AbuseIP • Running checks", $"{sourceLabel} | IPs: {ipsToCheck.Count}");
+        ConsoleEx.Header("AbuseIPDB: running checks", $"{sourceLabel} | IPs: {ipsToCheck.Count}");
 
         var cfg = AbuseIpDbClient.LoadConfig(_session.Root);
 
@@ -358,7 +359,7 @@ public sealed class AbuseIpMenu : IMenu
             .AutoClear(true)
             .StartAsync(async ctx =>
             {
-                var task = ctx.AddTask("Checking IP reputation…", maxValue: ipsToCheck.Count);
+                var task = ctx.AddTask("Checking IP reputation...", maxValue: ipsToCheck.Count);
 
                 foreach (var ip in ipsToCheck)
                 {
@@ -463,7 +464,7 @@ public sealed class AbuseIpMenu : IMenu
 
         client.Dispose();
 
-        ConsoleEx.Header("AbuseIP • Results", $"Source: {sourceLabel} | Checked: {results.Count}  |  Failed: {failures.Count}");
+        ConsoleEx.Header("AbuseIPDB: results", $"Source: {sourceLabel} | Checked: {results.Count} | Failed: {failures.Count}");
 
         RenderResultsTable(results);
 
@@ -475,16 +476,17 @@ public sealed class AbuseIpMenu : IMenu
                 AnsiConsole.MarkupLine($"[grey]- {Markup.Escape(f.Ip)}:[/] {Markup.Escape(f.Error)}");
         }
 
-        var exportPath = Path.Combine(_session.Root, "output", $"abuseipdb_checks_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv");
+        var exportPath = Path.Combine(AppFolders.Output, $"abuseipdb_checks_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv");
+        Directory.CreateDirectory(AppFolders.Output);
         AbuseIpDbClient.ExportResultsCsv(exportPath, results);
 
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine($"[green]Exported[/] {Markup.Escape(exportPath)}");
+        ConsoleEx.Success($"Exported: {exportPath}");
 
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
-    // ---- Display helpers (prevent wrapping/beeps) ----
+    // ---- Display helpers ----
 
     private static string BuildFileDisplay(FileInfo f)
     {
@@ -500,7 +502,7 @@ public sealed class AbuseIpMenu : IMenu
 
         name = TrimMiddle(name, maxName);
 
-        // Keep plain text here (no markup) to avoid weird host behavior
+        // Plain text (no markup) to keep hosts happy.
         return $"{ts} - {name} {size}";
     }
 
@@ -522,10 +524,11 @@ public sealed class AbuseIpMenu : IMenu
         if (string.IsNullOrEmpty(s) || s.Length <= max) return s;
         if (max <= 3) return s[..max];
 
-        var head = (max - 1) / 2;
-        var tail = max - head - 1;
+        var cut = max - 3;
+        var head = cut / 2;
+        var tail = cut - head;
 
-        return s[..head] + "…" + s[^tail..];
+        return s[..head] + "..." + s[^tail..];
     }
 
     // ---- UI renderers ----
@@ -582,7 +585,7 @@ public sealed class AbuseIpMenu : IMenu
     private static string Trunc(string? s, int max)
     {
         if (string.IsNullOrEmpty(s)) return "";
-        return s.Length <= max ? s : s[..(max - 1)] + "…";
+        return s.Length <= max ? s : s[..Math.Max(0, max - 3)] + "...";
     }
 
     // ---- File/time helpers ----

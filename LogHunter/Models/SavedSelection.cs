@@ -1,4 +1,7 @@
-﻿namespace LogHunter.Models;
+﻿// Models/SavedSelection.cs
+using System;
+
+namespace LogHunter.Models;
 
 public sealed record SavedSelection(
     DateTime SavedAtUtc,

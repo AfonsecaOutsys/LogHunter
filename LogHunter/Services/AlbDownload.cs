@@ -35,13 +35,13 @@ public static class AlbDownload
 
     private sealed class AlbConfig
     {
-        public string Name { get; set; } = "";       // file name / selection label
+        public string Name { get; set; } = ""; // file name / selection label
         public string Bucket { get; set; } = "";
-        public string AlbId { get; set; } = "";      // base id e.g. ALB226963
+        public string AlbId { get; set; } = ""; // base id e.g. ALB226963
         public AlbScope Scope { get; set; } = AlbScope.Normal; // Normal or Internal
         public string AccountId { get; set; } = "";
         public string Region { get; set; } = "";
-        public bool IsSentry { get; set; }           // standard vs sentry prefix root
+        public bool IsSentry { get; set; } // standard vs sentry prefix root
         public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
     }
 
@@ -50,14 +50,14 @@ public static class AlbDownload
         AppFolders.Ensure();
         EnsureConfigsFolder();
 
-        ConsoleEx.Header("ALB - Download logs", $"Destination: {AppFolders.ALB}");
+        ConsoleEx.Header("ALB: Download logs from S3", $"Destination: {AppFolders.ALB}");
 
         var awsExe = ResolveAwsExePath();
         if (string.IsNullOrWhiteSpace(awsExe))
         {
-            ConsoleEx.Error("Couldn't find aws.exe.");
-            ConsoleEx.Info("Make sure AWS CLI v2 is installed and available on PATH (try: where aws).");
-            ConsoleEx.Pause();
+            ConsoleEx.Error("AWS CLI (aws.exe) not found.");
+            ConsoleEx.Info("Install AWS CLI v2 or ensure it is on PATH (try: where aws).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -68,15 +68,20 @@ public static class AlbDownload
 
         var modeItems = new[]
         {
-            new ConsoleEx.MenuItem("New configuration",
-                "Create a new config file under ALB\\configs.\nYou’ll be asked for bucket, ALB id, account id and region."),
-            new ConsoleEx.MenuItem("Previously saved configuration",
-                "Pick an existing config from ALB\\configs.\nUseful for recurring environments."),
-            new ConsoleEx.MenuItem("Cancel",
-                "Return to ALB menu (no changes).")
+            new ConsoleEx.MenuItem(
+                "New configuration",
+                "Create a config under ALB\\configs.\nYou will be asked for bucket, ALB id, account id, and region."),
+
+            new ConsoleEx.MenuItem(
+                "Saved configuration",
+                "Use an existing config from ALB\\configs.\nRecommended for recurring environments."),
+
+            new ConsoleEx.MenuItem(
+                "Cancel",
+                "Return to the ALB menu.")
         };
 
-        var mode = ConsoleEx.Menu("Download ALB logs: choose an option", modeItems, pageSize: 12);
+        var mode = ConsoleEx.Menu("ALB download", modeItems, pageSize: 12);
         if (mode is null || mode.Value == 2)
             return;
 
@@ -86,19 +91,19 @@ public static class AlbDownload
             if (cfg is null)
             {
                 ConsoleEx.Warn("No saved configurations found (or selection cancelled).");
-                ConsoleEx.Pause();
+                ConsoleEx.Pause("Press Enter to return...");
                 return;
             }
 
-            ConsoleEx.Info($"Using saved config: {cfg.Name}");
+            ConsoleEx.Info($"Using config: {cfg.Name}");
         }
         else
         {
             cfg = CreateNewConfig();
             if (cfg is null)
             {
-                ConsoleEx.Warn("Cancelled.");
-                ConsoleEx.Pause();
+                ConsoleEx.Info("Cancelled.");
+                ConsoleEx.Pause("Press Enter to return...");
                 return;
             }
         }
@@ -126,15 +131,15 @@ public static class AlbDownload
         }
         catch (OperationCanceledException)
         {
-            ConsoleEx.Warn("Cancelled.");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("Cancelled.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         if (endUtc < startUtc)
         {
-            ConsoleEx.Error("End must be >= Start.");
-            ConsoleEx.Pause();
+            ConsoleEx.Error("End must be greater than or equal to Start.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -149,8 +154,11 @@ public static class AlbDownload
         // Plan
         // -----------------------------
         AnsiConsole.WriteLine();
-        var plan = new Table().RoundedBorder().Title("[grey]Download plan[/]")
-            .AddColumn("Field").AddColumn("Value");
+        var plan = new Table()
+            .RoundedBorder()
+            .Title("[grey]Download plan[/]")
+            .AddColumn("Field")
+            .AddColumn("Value");
 
         plan.AddRow("aws.exe", Markup.Escape(awsExe));
         plan.AddRow("Config", Markup.Escape(cfg.Name));
@@ -175,6 +183,7 @@ public static class AlbDownload
         // -----------------------------
         var runFolderName = $"{cfg.Name}_{startUtc:yyyyMMdd_HHmm}Z_to_{endUtc:yyyyMMdd_HHmm}Z";
         runFolderName = SanitizeFileName(runFolderName);
+
         var runFolder = Path.Combine(AppFolders.ALB, runFolderName);
         Directory.CreateDirectory(runFolder);
 
@@ -187,7 +196,7 @@ public static class AlbDownload
         var days = EachDayUtc(startUtc.Date, endUtc.Date).ToList();
         var daySyncFailures = 0;
 
-        AnsiConsole.MarkupLine($"[grey]Downloading full day prefixes ({days.Count} day(s)) using aws s3 sync...[/]");
+        AnsiConsole.MarkupLine($"[grey]Downloading day prefixes ({days.Count} day(s)) using aws s3 sync...[/]");
         AnsiConsole.WriteLine();
 
         foreach (var day in days)
@@ -196,7 +205,7 @@ public static class AlbDownload
                 $"{prefixRoot}/{albKey}/AWSLogs/{cfg.AccountId}/elasticloadbalancing/{cfg.Region}/{day:yyyy}/{day:MM}/{day:dd}/";
 
             var s3Uri = $"s3://{cfg.Bucket}/{dayPrefix}";
-            var title = $"Downloading day {day:yyyy-MM-dd}";
+            var title = $"Downloading {day:yyyy-MM-dd}";
 
             var ok = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
@@ -229,7 +238,7 @@ public static class AlbDownload
             ConsoleEx.Warn("No .gz files were downloaded.");
             Console.WriteLine($"Day sync failures: {daySyncFailures}");
             Console.WriteLine($"Folder: {runFolder}");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -241,12 +250,12 @@ public static class AlbDownload
         var unknown = 0;
 
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine($"[grey]Pruning downloads to selected UTC window (downloaded: {allGz.Count})...[/]");
+        AnsiConsole.MarkupLine($"[grey]Pruning to selected UTC window (downloaded: {allGz.Count})...[/]");
 
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .SpinnerStyle(Style.Parse("grey"))
-            .StartAsync("Pruning (delete outside timeframe)", async _ =>
+            .StartAsync("Pruning (delete outside window)", async _ =>
             {
                 foreach (var gz in allGz)
                 {
@@ -293,7 +302,7 @@ public static class AlbDownload
             Console.WriteLine($"Deleted:    {deleted}");
             Console.WriteLine($"Unknown ts: {unknown} (kept)");
             Console.WriteLine($"Folder:     {runFolder}");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -339,9 +348,9 @@ public static class AlbDownload
         Console.WriteLine($"  Unknown timestamp:    {unknown} (kept)");
         Console.WriteLine($"  Kept for extraction:  {gzFiles.Count}");
         Console.WriteLine($"  Extracted (.log):     {extracted}");
-        Console.WriteLine($"  Extract failed:       {extractFailed} (left as .gz in folder)");
+        Console.WriteLine($"  Extract failed:       {extractFailed} (left as .gz)");
         Console.WriteLine($"  Folder:               {runFolder}");
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     // =========================
@@ -365,7 +374,7 @@ public static class AlbDownload
         if (files.Count == 0)
             return null;
 
-        var configs = new List<AlbConfig>();
+        var loaded = new List<AlbConfig>();
         foreach (var f in files)
         {
             try
@@ -373,17 +382,22 @@ public static class AlbDownload
                 var json = File.ReadAllText(f, Encoding.UTF8);
                 var c = JsonSerializer.Deserialize<AlbConfig>(json, JsonOpts);
                 if (c is not null && !string.IsNullOrWhiteSpace(c.Name))
-                    configs.Add(c);
+                    loaded.Add(c);
             }
-            catch { }
+            catch
+            {
+                // ignore unreadable configs
+            }
         }
 
-        if (configs.Count == 0)
+        if (loaded.Count == 0)
             return null;
 
-        // Build menu items with hints
-        var items = configs
+        var ordered = loaded
             .OrderByDescending(c => c.LastUsedUtc)
+            .ToList();
+
+        var items = ordered
             .Select(c =>
             {
                 var scope = c.Scope == AlbScope.Internal ? "Internal" : "Normal";
@@ -403,23 +417,22 @@ public static class AlbDownload
             })
             .ToList();
 
-        // Add a cancel row
         items.Add(new ConsoleEx.MenuItem("Cancel", "Return without selecting a configuration."));
 
-        var choice = ConsoleEx.Menu("Select a saved configuration", items, pageSize: 12);
+        var choice = ConsoleEx.Menu("Select a configuration", items, pageSize: 12);
         if (choice is null) return null;
 
         var idx = choice.Value;
-        if (idx < 0 || idx >= configs.Count) return null; // cancel row or out of range
+        if (idx < 0 || idx >= ordered.Count)
+            return null; // cancel
 
-        return configs.OrderByDescending(c => c.LastUsedUtc).ToList()[idx];
+        return ordered[idx];
     }
 
     private static AlbConfig? CreateNewConfig()
     {
         EnsureConfigsFolder();
 
-        // Scope selection (Esc cancels)
         var scopeItems = new[]
         {
             new ConsoleEx.MenuItem("Normal", "ALB key will be exactly the ALB id (e.g., ALB226963)."),
@@ -427,27 +440,24 @@ public static class AlbDownload
             new ConsoleEx.MenuItem("Cancel", "Return without creating a configuration.")
         };
 
-        var scopePick = ConsoleEx.Menu("ALB type?", scopeItems, pageSize: 12);
+        var scopePick = ConsoleEx.Menu("ALB scope", scopeItems, pageSize: 12);
         if (scopePick is null || scopePick.Value == 2) return null;
 
         var scope = scopePick.Value == 1 ? AlbScope.Internal : AlbScope.Normal;
 
-        // Sentry?
-        var isSentryPick = PromptYesNoWithEsc("Is this Sentry logs?", defaultYes: false);
+        var isSentryPick = PromptYesNoWithEsc("Sentry logs?", defaultYes: false);
         if (isSentryPick is null) return null;
         var isSentry = isSentryPick.Value;
 
-        // Inputs (Esc cancels)
-        var bucket = ReadRequiredLine("S3 bucket (e.g. ...-eu-west-1-alblogs): ");
+        var bucket = ReadRequiredLine("S3 bucket (e.g. ...-eu-west-1-alblogs):");
         if (bucket is null) return null;
 
-        var albId = ReadRequiredLine("ALB identifier (e.g. ALB226963): ");
+        var albId = ReadRequiredLine("ALB identifier (e.g. ALB226963):");
         if (albId is null) return null;
 
-        var account = ReadRequiredLine("Amazon account ID (12 digits): ");
+        var account = ReadRequiredLine("AWS account ID (12 digits):");
         if (account is null) return null;
 
-        // Derive region from bucket
         var derivedRegion = TryDeriveRegionFromBucket(bucket);
         string region;
 
@@ -464,21 +474,20 @@ public static class AlbDownload
             }
             else
             {
-                var reg = ReadRequiredLine("Region (e.g. eu-west-1): ");
+                var reg = ReadRequiredLine("Region (e.g. eu-west-1):");
                 if (reg is null) return null;
                 region = reg;
             }
         }
         else
         {
-            var reg = ReadRequiredLine("Region (e.g. eu-west-1): ");
+            var reg = ReadRequiredLine("Region (e.g. eu-west-1):");
             if (reg is null) return null;
             region = reg;
         }
 
-        // Config name (default: ALB id (+ internal suffix if internal))
         var defaultName = scope == AlbScope.Internal ? $"{albId}-internal" : albId;
-        var nameMaybe = ConsoleEx.ReadLineWithEsc($"Config name (default: {defaultName}): ", trim: true);
+        var nameMaybe = ConsoleEx.ReadLineWithEsc($"Config name (default: {defaultName}):", trim: true);
         if (nameMaybe is null) return null;
 
         var name = string.IsNullOrWhiteSpace(nameMaybe) ? defaultName : nameMaybe;
@@ -516,6 +525,7 @@ public static class AlbDownload
     {
         EnsureConfigsFolder();
         cfg.LastUsedUtc = DateTime.UtcNow;
+
         var json = JsonSerializer.Serialize(cfg, JsonOpts);
         File.WriteAllText(GetConfigPath(cfg.Name), json, Encoding.UTF8);
     }
@@ -604,20 +614,21 @@ public static class AlbDownload
             string.IsNullOrWhiteSpace(parsed.SessionToken))
         {
             Console.WriteLine();
-            Console.WriteLine("Couldn't parse credentials. Expected lines like:");
+            Console.WriteLine("Could not parse credentials. Expected lines like:");
             Console.WriteLine("  SET AWS_ACCESS_KEY_ID=...");
             Console.WriteLine("  SET AWS_SECRET_ACCESS_KEY=...");
             Console.WriteLine("  SET AWS_SESSION_TOKEN=...");
             Console.WriteLine("Or:");
             Console.WriteLine("  export AWS_ACCESS_KEY_ID=...");
             Console.WriteLine();
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return null;
         }
 
-        // Tiny confirmation (don’t echo secrets)
+        // Tiny confirmation (do not echo secrets)
         var ak = parsed.AccessKeyId!;
         var suffix = ak.Length >= 4 ? ak[^4..] : ak;
+
         ConsoleEx.Info($"Parsed credentials (AccessKeyId ends with: ...{suffix})");
         ConsoleEx.Info("Credentials are kept in memory for this run only (never saved).");
 
@@ -632,7 +643,7 @@ public static class AlbDownload
 
     /// <summary>
     /// Reads multiple lines. Empty line ends input. ESC cancels and returns null.
-    /// Basic editing supported (Backspace). No clipboard magic, but reliable.
+    /// Basic editing supported (Backspace).
     /// </summary>
     private static string? ReadMultilineWithEsc()
     {
@@ -726,16 +737,12 @@ public static class AlbDownload
             int idxCol = line.IndexOf(':');
 
             int idx;
-            char sep;
-            if (idxEq > 0) { idx = idxEq; sep = '='; }
-            else if (idxCol > 0) { idx = idxCol; sep = ':'; }
+            if (idxEq > 0) idx = idxEq;
+            else if (idxCol > 0) idx = idxCol;
             else continue;
 
             var key = line[..idx].Trim();
             var val = line[(idx + 1)..].Trim().Trim('"');
-
-            // Some people paste "AWS_SESSION_TOKEN = ...", normalize
-            if (sep == ':' && val.StartsWith(" ", StringComparison.Ordinal)) val = val.Trim();
 
             if (key.Equals("AWS_ACCESS_KEY_ID", StringComparison.OrdinalIgnoreCase)) ak = val;
             else if (key.Equals("AWS_SECRET_ACCESS_KEY", StringComparison.OrdinalIgnoreCase)) sk = val;
@@ -896,18 +903,18 @@ public static class AlbDownload
             // If it failed, rerun capturing stderr for visibility
             var (ok2, _, err2) = await RunAwsCapturedAsync(awsExePath, args, creds).ConfigureAwait(false);
             if (!ok2 && !string.IsNullOrWhiteSpace(err2))
-                AnsiConsole.MarkupLineInterpolated($"[red]aws sync error:[/] {new Markup(Markup.Escape(err2.Trim()))}");
+                AnsiConsole.MarkupLine($"[red]aws s3 sync error:[/] {Markup.Escape(err2.Trim())}");
 
             return false;
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 2)
         {
-            AnsiConsole.MarkupLine("[red]aws.exe not found when starting process.[/]");
+            AnsiConsole.MarkupLine("[red]aws.exe was not found when starting the process.[/]");
             return false;
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLineInterpolated($"[red]Failed to run aws sync:[/] {new Markup(Markup.Escape(ex.Message))}");
+            AnsiConsole.MarkupLine($"[red]Failed to run aws s3 sync:[/] {Markup.Escape(ex.Message)}");
             return false;
         }
     }
@@ -971,8 +978,8 @@ public static class AlbDownload
         var m = AlbTimestampRegex.Match(fileNameOrKey);
         if (!m.Success) return null;
 
-        var ymd = m.Groups[1].Value;  // YYYYMMDD
-        var hm = m.Groups[2].Value;   // HHMM
+        var ymd = m.Groups[1].Value; // YYYYMMDD
+        var hm = m.Groups[2].Value;  // HHMM
 
         if (!int.TryParse(ymd[..4], out var year)) return null;
         if (!int.TryParse(ymd[4..6], out var month)) return null;
@@ -992,10 +999,9 @@ public static class AlbDownload
         await gzip.CopyToAsync(outFile).ConfigureAwait(false);
     }
 
-    // Tiny safety helper: avoid repeating Directory.GetCurrentDirectory() and keep it non-throwing.
     private static string GetWorkingDirectorySafe()
     {
-        try { return System.IO.Directory.GetCurrentDirectory(); }
+        try { return Directory.GetCurrentDirectory(); }
         catch { return AppContext.BaseDirectory; }
     }
 }

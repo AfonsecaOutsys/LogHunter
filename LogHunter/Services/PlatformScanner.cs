@@ -1,10 +1,17 @@
 ﻿// Services/PlatformScanner.cs
 using ExcelDataReader;
-using Microsoft.VisualBasic.FileIO;
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using IOSearchOption = System.IO.SearchOption;
+using System.Threading;
+using System.Threading.Tasks;
+
+// Only import what we need from Microsoft.VisualBasic.FileIO to avoid SearchOption ambiguity
+using TextFieldParser = Microsoft.VisualBasic.FileIO.TextFieldParser;
+using FieldType = Microsoft.VisualBasic.FileIO.FieldType;
 
 namespace LogHunter.Services;
 
@@ -32,10 +39,9 @@ public static class PlatformScanner
 
     private static PlatformSuspiciousScanResult Scan(string dir, CancellationToken ct)
     {
-        // ExcelDataReader sometimes needs this (esp. .xls); harmless for .xlsx
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-        var files = Directory.EnumerateFiles(dir, "*.*", IOSearchOption.AllDirectories)
+        var files = Directory.EnumerateFiles(dir, "*.*", System.IO.SearchOption.AllDirectories)
             .Where(p => p.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
                         p.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -51,7 +57,7 @@ public static class PlatformScanner
 
             try
             {
-                bool matchedThisFile = file.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)
+                var matchedThisFile = file.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)
                     ? ScanCsv(file, res, ct)
                     : ScanXlsx(file, res, ct);
 
@@ -60,7 +66,7 @@ public static class PlatformScanner
             }
             catch
             {
-                // Skip unreadable/broken files silently (logs are messy).
+                // Skip unreadable/broken files silently (exports can be messy).
             }
         }
 
@@ -70,7 +76,6 @@ public static class PlatformScanner
 
     private static bool ScanCsv(string path, PlatformSuspiciousScanResult res, CancellationToken ct)
     {
-        // Detect delimiter quickly from header line
         var firstLine = File.ReadLines(path).FirstOrDefault() ?? "";
         var comma = firstLine.Count(c => c == ',');
         var semi = firstLine.Count(c => c == ';');
@@ -95,7 +100,7 @@ public static class PlatformScanner
         if (!TryResolveColumns(header, out var messageIdx, out var envIdx))
             return false;
 
-        bool anyMatch = false;
+        var anyMatch = false;
 
         while (!parser.EndOfData)
         {
@@ -132,7 +137,7 @@ public static class PlatformScanner
         using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var reader = ExcelReaderFactory.CreateReader(stream);
 
-        bool anyMatch = false;
+        var anyMatch = false;
 
         do
         {
@@ -148,7 +153,6 @@ public static class PlatformScanner
             if (!TryResolveColumns(headers, out var messageIdx, out var envIdx))
                 continue;
 
-            // Read rows
             while (reader.Read())
             {
                 ct.ThrowIfCancellationRequested();
@@ -191,11 +195,9 @@ public static class PlatformScanner
         {
             var n = Norm(headers[i]);
 
-            // Message candidates
             if (messageIdx < 0 && (n == "message" || n == "logbody"))
                 messageIdx = i;
 
-            // Environment info candidates (supports: environmentinformation, ...environment_information, ...environmentinformation)
             if (envIdx < 0 && n.EndsWith("environmentinformation", StringComparison.OrdinalIgnoreCase))
                 envIdx = i;
         }
@@ -220,8 +222,8 @@ public static class PlatformScanner
         if (mXff.Success)
         {
             var raw = mXff.Groups["ip"].Value.Trim();
-            // Take first IP if multiple (comma-separated)
-            xffIp = raw.Split(',')[0].Trim();
+            var first = raw.Split(',')[0].Trim();
+            xffIp = string.IsNullOrWhiteSpace(first) ? null : first;
         }
 
         effectiveIp = !string.IsNullOrWhiteSpace(xffIp) ? xffIp : clientIp;
@@ -233,7 +235,6 @@ public static class PlatformScanner
         if (string.IsNullOrWhiteSpace(s))
             return "";
 
-        // Lowercase + keep only letters/digits (so '.' '_' '-' etc don’t matter)
         Span<char> buffer = stackalloc char[s.Length];
         int p = 0;
 
@@ -263,14 +264,15 @@ public sealed class PlatformSuspiciousScanResult
 
     public int DistinctEffectiveIps { get; private set; }
 
-    // Error type -> (Effective IP -> hits)
-    public Dictionary<string, Dictionary<string, int>> EffectiveIpCountsByErrorType { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, Dictionary<string, int>> EffectiveIpCountsByErrorType { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
 
-    // For screen summaries
-    public Dictionary<string, (int Rows, int DistinctEffectiveIps)> ByErrorType { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, (int Rows, int DistinctEffectiveIps)> ByErrorType { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public List<(string Ip, int Hits)> TopEffectiveIpsOverall { get; private set; } = new();
-    public Dictionary<string, List<(string Ip, int Hits)>> TopEffectiveIpsByErrorType { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, List<(string Ip, int Hits)>> TopEffectiveIpsByErrorType { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public void AddHit(PlatformSuspiciousType type, string effectiveIp, string? clientIp, string? xffIp)
     {

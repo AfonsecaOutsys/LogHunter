@@ -1,5 +1,10 @@
-﻿using System.Globalization;
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
@@ -8,9 +13,10 @@ public static class AlbScanner
     public static List<string> GetLogFiles()
     {
         var albRoot = AppFolders.ALB;
-        if (!Directory.Exists(albRoot)) return new List<string>();
+        if (!Directory.Exists(albRoot))
+            return new List<string>();
 
-        // You said: analyzing .log only
+        // ALB analysis uses extracted .log files (not .gz).
         return Directory.EnumerateFiles(albRoot, "*.log", SearchOption.AllDirectories).ToList();
     }
 
@@ -25,40 +31,47 @@ public static class AlbScanner
     // 12  = "request" (quoted)
     // 22  = "actions_executed" (quoted)
     //
-    // NOTE: We use a tokenizer that treats quoted fields as single tokens.
-    // This keeps behavior aligned with real ALB logs.
+    // Tokenization rules: space-delimited, but quoted segments are treated as a single token.
+    // Quoted tokens are returned without surrounding quotes.
 
     public static string? ExtractAlbClientIp(string line)
     {
-        if (!TryGetToken(line.AsSpan(), 3, out var client)) return null;
+        if (!TryGetToken(line.AsSpan(), 3, out var client))
+            return null;
 
         int colon = client.IndexOf(':');
-        if (colon <= 0) return client.Length > 0 ? client.ToString() : null;
+        if (colon <= 0)
+            return client.Length > 0 ? client.ToString() : null;
 
         return client[..colon].ToString();
     }
 
     public static DateTime? ExtractAlbTimestampUtc(string line)
     {
-        if (!TryGetToken(line.AsSpan(), 1, out var ts)) return null;
+        if (!TryGetToken(line.AsSpan(), 1, out var ts))
+            return null;
 
-        // ALB timestamps are ISO-ish with Z. We force universal.
         if (DateTime.TryParse(ts, CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt))
+        {
             return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+        }
 
         return null;
     }
 
     public static string? ExtractAlbTargetHost(string line)
     {
-        if (!TryGetToken(line.AsSpan(), 4, out var target)) return null;
+        if (!TryGetToken(line.AsSpan(), 4, out var target))
+            return null;
+
         return target.Length > 0 ? target.ToString() : null;
     }
 
     public static double? ExtractAlbTargetProcessingTimeSeconds(string line)
     {
-        if (!TryGetToken(line.AsSpan(), 6, out var dur)) return null;
+        if (!TryGetToken(line.AsSpan(), 6, out var dur))
+            return null;
 
         if (double.TryParse(dur, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
             return v;
@@ -68,13 +81,17 @@ public static class AlbScanner
 
     public static string? ExtractAlbActionsExecuted(string line)
     {
-        if (!TryGetToken(line.AsSpan(), 22, out var actions)) return null;
+        if (!TryGetToken(line.AsSpan(), 22, out var actions))
+            return null;
+
         return actions.Length > 0 ? actions.ToString() : null;
     }
 
     public static string? ExtractAlbUriNoQuery(string line)
     {
-        if (!TryGetToken(line.AsSpan(), 12, out var req)) return null;
+        if (!TryGetToken(line.AsSpan(), 12, out var req))
+            return null;
+
         return ExtractUriNoQueryFromRequest(req);
     }
 
@@ -82,20 +99,22 @@ public static class AlbScanner
     // POST https://host:443/Enrollment/CheckStatus.aspx HTTP/1.1
     private static string ExtractUriNoQueryFromRequest(ReadOnlySpan<char> request)
     {
-        if (request.Length == 0) return "";
+        if (request.Length == 0)
+            return "";
 
         int sp1 = request.IndexOf(' ');
-        if (sp1 < 0 || sp1 + 1 >= request.Length) return "";
+        if (sp1 < 0 || sp1 + 1 >= request.Length)
+            return "";
 
         var rest = request[(sp1 + 1)..];
         int sp2 = rest.IndexOf(' ');
         ReadOnlySpan<char> url = sp2 >= 0 ? rest[..sp2] : rest;
 
-        // strip query
+        // Strip query
         int q = url.IndexOf('?');
         if (q >= 0) url = url[..q];
 
-        // absolute URL -> take path
+        // Absolute URL -> take path portion
         int scheme = url.IndexOf("://", StringComparison.Ordinal);
         if (scheme >= 0)
         {
@@ -110,14 +129,10 @@ public static class AlbScanner
             return "/";
         }
 
-        // already path-ish
+        // Already path-ish
         return url.ToString();
     }
 
-    /// <summary>
-    /// Tokenizer for ALB logs: space-delimited, but quoted segments count as one token.
-    /// Returns token WITHOUT surrounding quotes.
-    /// </summary>
     private static bool TryGetToken(ReadOnlySpan<char> line, int tokenIndex, out ReadOnlySpan<char> token)
     {
         token = default;
@@ -127,8 +142,11 @@ public static class AlbScanner
 
         while (idx < line.Length)
         {
-            while (idx < line.Length && line[idx] == ' ') idx++;
-            if (idx >= line.Length) break;
+            while (idx < line.Length && line[idx] == ' ')
+                idx++;
+
+            if (idx >= line.Length)
+                break;
 
             bool quoted = line[idx] == '"';
             int start = idx;
@@ -137,9 +155,14 @@ public static class AlbScanner
             {
                 start++;
                 idx = start;
-                while (idx < line.Length && line[idx] != '"') idx++;
+
+                while (idx < line.Length && line[idx] != '"')
+                    idx++;
+
                 int end = idx;
-                idx = Math.Min(idx + 1, line.Length); // consume closing quote
+
+                // consume closing quote if present
+                idx = Math.Min(idx + 1, line.Length);
 
                 if (current == tokenIndex)
                 {
@@ -151,7 +174,9 @@ public static class AlbScanner
             }
             else
             {
-                while (idx < line.Length && line[idx] != ' ') idx++;
+                while (idx < line.Length && line[idx] != ' ')
+                    idx++;
+
                 int end = idx;
 
                 if (current == tokenIndex)
@@ -205,7 +230,8 @@ public static class AlbScanner
         }
 
         var remaining = fs.Length - lastReportedPos;
-        if (remaining > 0) reportBytesDelta(remaining);
+        if (remaining > 0)
+            reportBytesDelta(remaining);
     }
 
     public static async Task ScanFileForEndpointIpCountsAsync(
@@ -247,7 +273,8 @@ public static class AlbScanner
         }
 
         var remaining = fs.Length - lastReportedPos;
-        if (remaining > 0) reportBytesDelta(remaining);
+        if (remaining > 0)
+            reportBytesDelta(remaining);
     }
 
     public static async Task ScanFileForIpUriCountsAsync(
@@ -273,7 +300,7 @@ public static class AlbScanner
             var uri = ExtractAlbUriNoQuery(line);
             if (string.IsNullOrEmpty(uri)) continue;
 
-            // old format: "IP\tURI" to avoid heavy object keys
+            // Key format: "IP\tURI" (avoids heavier composite keys)
             var key = $"{ip}\t{uri}";
 
             if (pairCounts.TryGetValue(key, out var cur))
@@ -290,6 +317,7 @@ public static class AlbScanner
         }
 
         var remaining = fs.Length - lastReportedPos;
-        if (remaining > 0) reportBytesDelta(remaining);
+        if (remaining > 0)
+            reportBytesDelta(remaining);
     }
 }

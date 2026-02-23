@@ -1,7 +1,13 @@
 ﻿using LogHunter.Utils;
 using Spectre.Console;
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
@@ -98,21 +104,21 @@ public static class IisOption_FindBurstPatterns
     {
         var root = session.Root;
 
-        ConsoleEx.Header("IIS: Find Bursts Patterns");
+        ConsoleEx.Header("IIS: Burst patterns");
 
         var iisDir = Path.Combine(root, "IIS");
         if (!Directory.Exists(iisDir))
         {
-            AnsiConsole.MarkupLine($"[red]Missing IIS folder:[/] {Markup.Escape(iisDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Error($"Missing IIS folder: {iisDir}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
         var files = IisW3cReader.EnumerateLogFiles(iisDir);
         if (files.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No IIS logs found[/] under: {Markup.Escape(iisDir)}");
-            ConsoleEx.Pause();
+            ConsoleEx.Warn($"No IIS logs found under: {iisDir}");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -148,16 +154,16 @@ public static class IisOption_FindBurstPatterns
 
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Scanning IIS logs for bursts…", async ctx =>
+            .StartAsync("Scanning IIS logs for bursts...", async ctx =>
             {
                 for (int f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Scanning… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Scanning... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null)
                         continue;
 
@@ -263,14 +269,14 @@ public static class IisOption_FindBurstPatterns
                                 }
                             }
                         }
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
 
         if (aggs.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No traffic buckets found (after filters).[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No traffic buckets found (after filters).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -294,13 +300,15 @@ public static class IisOption_FindBurstPatterns
 
         if (bursts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No bursts matched the current heuristics.[/]");
-            AnsiConsole.MarkupLine("[dim]Try smaller bucket size or expect fewer bursts for this time range.[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No bursts matched the current heuristics.");
+            ConsoleEx.Info("Try a smaller bucket size or a wider time range.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        ConsoleEx.Header("IIS: Burst buckets (Top 20)", $"Bucket: {bucketSeconds}s | Rate≥{rateThreshold} dyn | Unique≥{enumThreshold} | 4xx≥{errorThreshold}");
+        ConsoleEx.Header(
+            "IIS: Burst buckets (Top 20)",
+            $"Bucket: {bucketSeconds}s | Rate>={rateThreshold} dyn | Unique>={enumThreshold} | 4xx>={errorThreshold}");
 
         var table = new Table()
             .RoundedBorder()
@@ -336,8 +344,8 @@ public static class IisOption_FindBurstPatterns
         AnsiConsole.Write(table);
         AnsiConsole.WriteLine();
 
-        // --- NEW: Save burst IPs to session (replaces prior) ---
-        if (ConsoleEx.ReadYesNo("Save burst IPs (distinct) to session? This replaces the previous burst-IP session.", defaultYes: true))
+        // Save distinct burst IPs to session (replaces prior)
+        if (ConsoleEx.ReadYesNo("Save burst IPs (distinct) to session? This replaces the previous burst-IP list.", defaultYes: true))
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var b in bursts)
@@ -349,12 +357,12 @@ public static class IisOption_FindBurstPatterns
             AnsiConsole.WriteLine();
         }
 
-        // --- Selection (export) ---
+        // Selection (export)
         var pick = new MultiSelectionPrompt<BurstPick>()
             .Title("Select burst bucket(s) to export raw lines")
             .NotRequired()
             .PageSize(20)
-            .InstructionsText("[grey](Space to toggle, Enter to confirm)[/]")
+            .InstructionsText("[grey](Space: toggle, Enter: confirm)[/]")
             .UseConverter(p => p.Display);
 
         pick.AddChoice(new BurstPick(SelectAllSentinel, "[bold][[Select ALL]][/] Export all bursts shown (Top 20)"));
@@ -374,8 +382,8 @@ public static class IisOption_FindBurstPatterns
         var selected = AnsiConsole.Prompt(pick);
         if (selected.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey](no bursts selected)[/]");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("No bursts selected.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -445,16 +453,16 @@ public static class IisOption_FindBurstPatterns
 
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Exporting selected bursts…", async ctx =>
+            .StartAsync("Exporting selected bursts...", async ctx =>
             {
                 for (int f = 0; f < files.Count; f++)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     var file = files[f];
-                    ctx.Status($"Exporting… ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
+                    ctx.Status($"Exporting... ({f + 1}/{files.Count}) {Path.GetFileName(file)}");
 
-                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct);
+                    var map = await IisW3cReader.ReadFieldMapAsync(file, ct).ConfigureAwait(false);
                     if (map is null)
                         continue;
 
@@ -484,7 +492,7 @@ public static class IisOption_FindBurstPatterns
                             writers[w.Id].WriteLine(rawLine);
                             exported++;
                         }
-                    });
+                    }).ConfigureAwait(false);
                 }
             });
 
@@ -495,7 +503,7 @@ public static class IisOption_FindBurstPatterns
         AnsiConsole.MarkupLine($"[dim]Bucket:[/] {bucketSeconds}s");
         AnsiConsole.MarkupLine($"[dim]Exported lines:[/] {exported:n0}");
         AnsiConsole.MarkupLine($"[dim]Output folder:[/] {Markup.Escape(batchDir)}");
-        ConsoleEx.Pause();
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     private static int Score(BurstAgg a, int rateTh, int enumTh, int errTh)
@@ -665,5 +673,5 @@ public static class IisOption_FindBurstPatterns
     }
 
     private static string Truncate(string s, int max)
-        => s.Length <= max ? s : s.Substring(0, Math.Max(0, max - 1)) + "…";
+        => s.Length <= max ? s : s.Substring(0, Math.Max(0, max - 3)) + "...";
 }

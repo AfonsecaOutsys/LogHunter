@@ -1,8 +1,11 @@
-﻿namespace LogHunter.Services;
+﻿using System;
+using System.IO;
+
+namespace LogHunter.Services;
 
 public static class AppFolders
 {
-    // Create/read folders next to the running EXE (stable for Debug/Release/publish/single-file).
+    // Creates/reads folders next to the running EXE (stable for Debug/Release/publish/single-file).
     public static readonly string Base = Path.GetFullPath(AppContext.BaseDirectory);
 
     public static readonly string ALB = Path.Combine(Base, "ALB");

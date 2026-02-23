@@ -1,4 +1,10 @@
-﻿using System.Text;
+﻿// Services/SelectionService.cs
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
 using LogHunter.Models;
 using Spectre.Console;
 
@@ -15,20 +21,20 @@ public static class SelectionService
         }
 
         var table = new Table().RoundedBorder();
-        table.AddColumn(new TableColumn("SavedAt (UTC)"));
-        table.AddColumn(new TableColumn("Source"));
-        table.AddColumn(new TableColumn("Rank").RightAligned());
-        table.AddColumn(new TableColumn("Hits").RightAligned());
-        table.AddColumn(new TableColumn("IP"));
+        table.AddColumn(new TableColumn("SavedAt (UTC)").NoWrap());
+        table.AddColumn(new TableColumn("Source").NoWrap());
+        table.AddColumn(new TableColumn("Rank").RightAligned().NoWrap());
+        table.AddColumn(new TableColumn("Hits").RightAligned().NoWrap());
+        table.AddColumn(new TableColumn("IP").NoWrap());
         table.AddColumn(new TableColumn("Endpoint"));
 
         foreach (var s in saved.OrderByDescending(x => x.SavedAtUtc))
         {
             table.AddRow(
-                s.SavedAtUtc.ToString("yyyy-MM-dd HH:mm:ss"),
+                s.SavedAtUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z",
                 Markup.Escape(s.Source),
-                s.Rank.ToString(),
-                s.Hits.ToString("N0"),
+                s.Rank.ToString(CultureInfo.InvariantCulture),
+                s.Hits.ToString("N0", CultureInfo.InvariantCulture),
                 Markup.Escape(s.IP),
                 Markup.Escape(s.Endpoint)
             );
@@ -41,7 +47,7 @@ public static class SelectionService
         });
 
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine($"[dim]Tip:[/] Use [bold]Export[/] from the main menu to save these to a CSV.");
+        AnsiConsole.MarkupLine("[dim]Tip:[/] Use [bold]Export[/] from the main menu to write these to CSV.");
     }
 
     public static void ExportAll(string outputFolder, List<SavedSelection> saved)
@@ -54,25 +60,45 @@ public static class SelectionService
 
         Directory.CreateDirectory(outputFolder);
 
-        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
         var outFile = Path.Combine(outputFolder, $"SavedSelections_{stamp}.csv");
 
-        using var w = new StreamWriter(outFile, false, Encoding.UTF8);
+        using var w = new StreamWriter(outFile, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         w.WriteLine("SavedAtUtc,Source,Endpoint,Rank,IP,Hits");
 
-        foreach (var s in saved.OrderBy(x => x.Source).ThenBy(x => x.Endpoint).ThenBy(x => x.Rank))
+        foreach (var s in saved
+                     .OrderBy(x => x.Source, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(x => x.Endpoint, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(x => x.Rank))
         {
-            var endpoint = s.Endpoint.Replace("\"", "\"\"");
-            w.WriteLine($"{s.SavedAtUtc:O},{s.Source},\"{endpoint}\",{s.Rank},{s.IP},{s.Hits}");
+            w.WriteLine(string.Join(",",
+                Csv(s.SavedAtUtc.ToString("O", CultureInfo.InvariantCulture)),
+                Csv(s.Source),
+                Csv(s.Endpoint),
+                s.Rank.ToString(CultureInfo.InvariantCulture),
+                Csv(s.IP),
+                s.Hits.ToString(CultureInfo.InvariantCulture)
+            ));
         }
 
         AnsiConsole.MarkupLine($"Exported: [green]{Markup.Escape(outFile)}[/]");
-        AnsiConsole.MarkupLine($"[dim]Rows:[/] {saved.Count:N0}");
+        AnsiConsole.MarkupLine($"[dim]Rows:[/] {saved.Count.ToString("N0", CultureInfo.InvariantCulture)}");
     }
 
     public static void ClearSavedSelections(List<SavedSelection> saved)
     {
         saved.Clear();
         AnsiConsole.MarkupLine("[green]Saved selections cleared.[/]");
+    }
+
+    private static string Csv(string? s)
+    {
+        if (string.IsNullOrEmpty(s))
+            return "";
+
+        var needsQuotes = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
+        if (!needsQuotes) return s;
+
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
     }
 }

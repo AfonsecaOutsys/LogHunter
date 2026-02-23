@@ -11,23 +11,48 @@ public sealed class AlbMenu : IMenu
 
     public async Task<IMenu?> ShowAsync(CancellationToken ct = default)
     {
-        ConsoleEx.Header("ALB Menu", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("ALB", $"Workspace: {_session.Root}");
 
-        // Hints are placeholders; you can refine them later.
         var items = new[]
         {
-            new ConsoleEx.MenuItem("Download ALB logs", "Downloads ALB logs from S3 into the workspace.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Top IPs for endpoint/path fragment", "Counts IPs hitting a given endpoint/path fragment.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Top 50 IPs overall", "Scans logs and returns the top 50 client IPs.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Top 50 IPs by URI (no query)", "Top URIs by IP, with query strings removed.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Requests (no query) ordered by AVG duration filtered by target", "Finds slow requests for a given target host.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Track requests per IP per 5 minutes (chart)", "Builds 5-minute time series per IP and generates outputs.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("WAF blocked summary + Top 50 blocked requests", "Summarizes WAF-blocked traffic and top blocked requests.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("WAF blocked over time (blocks/min) (chart)", "Charts blocked requests per minute.\nUses the same definition as option 7.\n(Placeholder hint)"),
-            new ConsoleEx.MenuItem("Back", "Return to the previous menu.")
+            new ConsoleEx.MenuItem(
+                "Download logs from S3",
+                "Download ALB logs into the workspace (ALB folder).\nUses AWS CLI and your current credentials/session."),
+
+            new ConsoleEx.MenuItem(
+                "Top IPs for endpoint/path fragment",
+                "Count client IPs hitting a given endpoint or path fragment.\nUseful to identify noisy sources for a specific route."),
+
+            new ConsoleEx.MenuItem(
+                "Top 50 IPs overall",
+                "Scan logs and show the top 50 client IPs across the selected time range."),
+
+            new ConsoleEx.MenuItem(
+                "Top 50 IPs by URI (no query)",
+                "Show top IPs per URI with query strings removed.\nHelps group requests by route instead of parameters."),
+
+            new ConsoleEx.MenuItem(
+                "Requests by AVG duration (filtered by target)",
+                "Find slow requests (query removed) ordered by average target duration,\nfiltered to a specific target host/service."),
+
+            new ConsoleEx.MenuItem(
+                "Requests per IP per 5 minutes (chart)",
+                "Build 5-minute request time series per IP and generate chart/CSV outputs."),
+
+            new ConsoleEx.MenuItem(
+                "WAF blocked summary + top blocked requests",
+                "Summarize WAF-blocked traffic and show the top blocked request patterns."),
+
+            new ConsoleEx.MenuItem(
+                "WAF blocks over time (per minute) (chart)",
+                "Chart WAF blocks per minute using the same definition as the summary view."),
+
+            new ConsoleEx.MenuItem(
+                "Back",
+                "Return to the main menu.")
         };
 
-        var selected = ConsoleEx.Menu("Select an option:", items, pageSize: 12);
+        var selected = ConsoleEx.Menu("ALB menu", items, pageSize: 12);
 
         // Esc = back
         if (selected is null)

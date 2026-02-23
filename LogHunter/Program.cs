@@ -1,10 +1,11 @@
-﻿using LogHunter.Menus;
+﻿// Program.cs  (tidied, same behavior)
+using LogHunter.Menus;
 using LogHunter.Services;
 using Spectre.Console;
 using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 using System.Text;
-using System.IO;
 
 namespace LogHunter;
 
@@ -17,25 +18,19 @@ sealed class BellDetectingWriter : TextWriter
 
     public override void Write(char value)
     {
-        if (value == '\a')
-            Debugger.Break();
-
+        if (value == '\a') Debugger.Break();
         _inner.Write(value);
     }
 
     public override void Write(string? value)
     {
-        if (value != null && value.IndexOf('\a') >= 0)
-            Debugger.Break();
-
+        if (value is not null && value.IndexOf('\a') >= 0) Debugger.Break();
         _inner.Write(value);
     }
 
     public override void WriteLine(string? value)
     {
-        if (value != null && value.IndexOf('\a') >= 0)
-            Debugger.Break();
-
+        if (value is not null && value.IndexOf('\a') >= 0) Debugger.Break();
         _inner.WriteLine(value);
     }
 }
@@ -52,7 +47,6 @@ internal static class Program
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
             ?? "unknown";
 
-        // Args
         string? rootOverride = null;
 
         for (var i = 0; i < args.Length; i++)
@@ -85,7 +79,6 @@ internal static class Program
                 continue;
             }
 
-            // Unknown arg
             Console.WriteLine($"Unknown argument: {a}");
             Console.WriteLine();
             ShowHelp(version);
@@ -104,14 +97,13 @@ internal static class Program
             Console.SetOut(new BellDetectingWriter(Console.Out));
             Console.SetError(new BellDetectingWriter(Console.Error));
 
-            AnsiConsole.MarkupLine($"[bold]LogHunter[/] [dim]Beta {version}[/]");
-
-            AppFolders.Ensure();
-
             var root = string.IsNullOrWhiteSpace(rootOverride)
                 ? AppContext.BaseDirectory
                 : Path.GetFullPath(rootOverride);
 
+            AppFolders.Ensure();
+
+            AnsiConsole.MarkupLine($"[bold]LogHunter[/] [dim]{version}[/]");
             AnsiConsole.MarkupLine($"[dim]Workspace:[/] {Markup.Escape(root)}");
             AnsiConsole.MarkupLine("[dim]Tip:[/] Ctrl+C to exit");
 
@@ -138,7 +130,7 @@ internal static class Program
 
     private static void ShowHelp(string version)
     {
-        Console.WriteLine($"LogHunter Beta {version}");
+        Console.WriteLine($"LogHunter {version}");
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  LogHunter [--root <path>] [--version] [--help]");

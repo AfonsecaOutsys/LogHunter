@@ -1,4 +1,7 @@
-﻿namespace LogHunter.Menus;
+﻿using System.Threading;
+using System.Threading.Tasks;
+
+namespace LogHunter.Menus;
 
 public interface IMenu
 {

@@ -1,6 +1,8 @@
 ﻿// Menus/PlatformMenu.cs
 using LogHunter.Services;
 using LogHunter.Utils;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Menus;
 
@@ -12,7 +14,7 @@ public sealed class PlatformMenu : IMenu
 
     public async Task<IMenu?> ShowAsync(CancellationToken ct = default)
     {
-        ConsoleEx.Header("Platform logs", $"Workspace: {_session.Root}");
+        ConsoleEx.Header("Platform", $"Workspace: {_session.Root}");
 
         var suspiciousCount = _session.PlatformSuspiciousIpHits?.Count ?? 0;
         var authedCount = _session.PlatformAuthedIpHits?.Count ?? 0;
@@ -20,45 +22,46 @@ public sealed class PlatformMenu : IMenu
         var items = new[]
         {
             new ConsoleEx.MenuItem(
-                "Suspicious requests > extract IPs",
-                "Scan /platformlogs (CSV + XLSX) for:\n" +
-                "- A potentially dangerous Request.Path...\n" +
-                "- The file * does not exist.\n\n" +
-                "Extract X-Forwarded-For (preferred) else ClientIp.\n" +
-                "Save results into session selections + Platform suspicious cache."
-            ),
+                "Suspicious requests: extract IPs",
+                "Scan Platform log exports (CSV/XLSX) for common suspicious patterns.\n" +
+                "Extract X-Forwarded-For (preferred), otherwise ClientIp.\n" +
+                "Stores results in session selections and updates the suspicious-IP cache."),
+
             new ConsoleEx.MenuItem(
-                $"Suspicious IPs > authenticated activity check ({suspiciousCount} IPs)",
-                "Uses the suspicious IP set from the previous step and scans other Platform log exports.\n" +
-                "Counts rows where UserId != 0 (past login).\n" +
-                "Outputs per-log-type hit counts and saves an 'authenticated IPs' cache for later."
-            ),
+                $"Suspicious IPs: authenticated activity check ({suspiciousCount} IPs)",
+                "Use the suspicious-IP cache from the previous step.\n" +
+                "Scan other Platform log exports and count rows where UserId != 0.\n" +
+                "Stores an authenticated-IP cache for later use."),
+
             new ConsoleEx.MenuItem(
-                $"(Info) Authenticated IP cache currently has ({authedCount})",
-                "This is populated by the authenticated activity check. It can be used later for AbuseIP / reporting."
-            ),
-            new ConsoleEx.MenuItem("Back", "Return to main menu.")
+                $"Authenticated IP cache ({authedCount})",
+                "Info-only view.\nRun the authenticated activity check to populate/update this cache."),
+
+            new ConsoleEx.MenuItem(
+                "Back",
+                "Return to the main menu.")
         };
 
-        var selected = ConsoleEx.Menu("Select an option:", items, pageSize: 10);
+        var selected = ConsoleEx.Menu("Platform menu", items, pageSize: 10);
 
+        // Esc = back
         if (selected is null)
             return new MainMenu(_session);
 
         switch (selected.Value)
         {
             case 0:
-                await PlatformOptions.SuspiciousRequestsExtractIpsAsync(_session, ct);
+                await PlatformOptions.SuspiciousRequestsExtractIpsAsync(_session, ct).ConfigureAwait(false);
                 return this;
 
             case 1:
-                await PlatformOptions.CheckSuspiciousIpsAuthenticatedAsync(_session, ct);
+                await PlatformOptions.CheckSuspiciousIpsAuthenticatedAsync(_session, ct).ConfigureAwait(false);
                 return this;
 
             case 2:
-                ConsoleEx.Header("Platform • Authenticated IP cache", $"IPs: {authedCount}");
-                ConsoleEx.Info("Run 'Suspicious IPs → authenticated activity check' to populate/update it.");
-                ConsoleEx.Pause();
+                ConsoleEx.Header("Platform: authenticated IP cache", $"IPs: {authedCount}");
+                ConsoleEx.Info("Run 'Suspicious IPs: authenticated activity check' to populate/update the cache.");
+                ConsoleEx.Pause("Press Enter to return...");
                 return this;
 
             case 3:

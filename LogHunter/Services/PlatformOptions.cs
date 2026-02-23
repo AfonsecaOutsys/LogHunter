@@ -2,26 +2,31 @@
 using LogHunter.Models;
 using LogHunter.Utils;
 using Spectre.Console;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LogHunter.Services;
 
 public static class PlatformOptions
 {
-    // OPTION 1 (already working) — keep here so PlatformMenu compiles
     public static async Task SuspiciousRequestsExtractIpsAsync(SessionState session, CancellationToken ct = default)
     {
-        ConsoleEx.Header("Platform: Suspicious requests → extract IPs", $"Workspace: {session.Root}");
+        ConsoleEx.Header("Platform: suspicious requests -> extract IPs", $"Workspace: {session.Root}");
 
-        var platformDir = Path.Combine(session.Root, "platformlogs");
+        var platformDir = AppFolders.PlatformLogs; // keep folder naming consistent
         if (!Directory.Exists(platformDir))
         {
             ConsoleEx.Warn($"Folder not found: {platformDir}");
-            ConsoleEx.Info("Create it and drop platform Error Logs exports (CSV/XLSX) inside.");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("Create it and drop Platform log exports (CSV/XLSX) inside.");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var result = await PlatformScanner.ScanSuspiciousRequestsAsync(platformDir, ct);
+        var result = await PlatformScanner.ScanSuspiciousRequestsAsync(platformDir, ct).ConfigureAwait(false);
 
         AnsiConsole.MarkupLine($"[dim]Scanned files:[/] {result.FilesScanned}  [dim]Matched files:[/] {result.FilesMatched}");
         AnsiConsole.MarkupLine($"[dim]Matched rows:[/] {result.MatchedRows}  [dim]Distinct effective IPs:[/] {result.DistinctEffectiveIps}");
@@ -30,10 +35,10 @@ public static class PlatformOptions
 
         if (result.MatchedRows == 0)
         {
-            ConsoleEx.Warn("No matching suspicious messages were found in the scanned logs.");
+            ConsoleEx.Warn("No matching suspicious rows were found in the scanned logs.");
             session.PlatformSuspiciousIpHits = null;
             session.PlatformSuspiciousIpHitsUpdatedUtc = null;
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -56,7 +61,7 @@ public static class PlatformOptions
 
         WriteTopTable("Top IPs (overall)", result.TopEffectiveIpsOverall, maxRows: 20);
 
-        foreach (var type in result.TopEffectiveIpsByErrorType.Keys.OrderBy(k => k))
+        foreach (var type in result.TopEffectiveIpsByErrorType.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
             WriteTopTable($"Top IPs ({type})", result.TopEffectiveIpsByErrorType[type], maxRows: 20);
 
         var (added, updated) = UpsertSelections(session.SavedSelections, result);
@@ -68,20 +73,22 @@ public static class PlatformOptions
 
         AnsiConsole.WriteLine();
         ConsoleEx.Success($"Saved to session selections: {added} added, {updated} updated.");
-        ConsoleEx.Success($"Saved Platform suspicious IP cache for AbuseIP: {session.PlatformSuspiciousIpHits.Count} IPs.");
-        ConsoleEx.Pause();
+        ConsoleEx.Success($"Updated suspicious IP cache: {session.PlatformSuspiciousIpHits.Count} IP(s).");
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
-    // OPTION 2 — suspicious IPs -> authenticated activity check
     public static async Task CheckSuspiciousIpsAuthenticatedAsync(SessionState session, CancellationToken ct = default)
     {
-        ConsoleEx.Header("Platform: Suspicious IPs → authenticated activity check", $"Workspace: {session.Root}");
+        ConsoleEx.Header("Platform: suspicious IPs -> authenticated activity", $"Workspace: {session.Root}");
 
         var suspicious = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         if (session.PlatformSuspiciousIpHits is not null)
+        {
             foreach (var ip in session.PlatformSuspiciousIpHits.Keys)
-                if (!string.IsNullOrWhiteSpace(ip)) suspicious.Add(ip);
+                if (!string.IsNullOrWhiteSpace(ip))
+                    suspicious.Add(ip);
+        }
 
         foreach (var s in session.SavedSelections)
         {
@@ -95,22 +102,22 @@ public static class PlatformOptions
         if (suspicious.Count == 0)
         {
             ConsoleEx.Warn("No suspicious IPs found in session.");
-            ConsoleEx.Info("Run: Platform → Suspicious requests → extract IPs");
-            ConsoleEx.Pause();
+            ConsoleEx.Info("Run: Platform -> Suspicious requests: extract IPs");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var platformDir = Path.Combine(session.Root, "platformlogs");
+        var platformDir = AppFolders.PlatformLogs;
         if (!Directory.Exists(platformDir))
         {
             ConsoleEx.Warn($"Folder not found: {platformDir}");
-            ConsoleEx.Pause();
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var result = await PlatformAuthScanner.ScanAuthenticatedActivityAsync(platformDir, suspicious, ct);
+        var result = await PlatformAuthScanner.ScanAuthenticatedActivityAsync(platformDir, suspicious, ct).ConfigureAwait(false);
 
-        AnsiConsole.MarkupLine($"[dim]Suspicious IPs input:[/] {result.SuspiciousIpsInput}");
+        AnsiConsole.MarkupLine($"[dim]Suspicious IPs (input):[/] {result.SuspiciousIpsInput}");
         AnsiConsole.MarkupLine($"[dim]Scanned files:[/] {result.FilesScanned}  [dim]Matched files:[/] {result.FilesMatched}");
         AnsiConsole.MarkupLine($"[dim]Authenticated hits (UserId != 0):[/] {result.TotalMatchedRows}  [dim]IPs matched:[/] {result.DistinctMatchedIps}");
         AnsiConsole.WriteLine();
@@ -119,7 +126,13 @@ public static class PlatformOptions
         kTable.AddColumn("Log type");
         kTable.AddColumn(new TableColumn("Auth hits").RightAligned());
 
-        foreach (var k in new[] { PlatformLogKind.General, PlatformLogKind.TraditionalWebRequests, PlatformLogKind.ScreenRequests, PlatformLogKind.Error })
+        foreach (var k in new[]
+        {
+            PlatformLogKind.General,
+            PlatformLogKind.TraditionalWebRequests,
+            PlatformLogKind.ScreenRequests,
+            PlatformLogKind.Error
+        })
         {
             var hits = result.RowsMatchedByKind.TryGetValue(k, out var v) ? v : 0;
             kTable.AddRow(k.ToString(), hits.ToString());
@@ -128,12 +141,15 @@ public static class PlatformOptions
         AnsiConsole.Write(kTable);
         AnsiConsole.WriteLine();
 
+        // Always update cache (even if empty) so the "count" in the menu is accurate.
+        session.PlatformAuthedIpHits = result.HitsByIp.ToDictionary(k => k.Key, v => v.Value.Total, StringComparer.OrdinalIgnoreCase);
+        session.PlatformAuthedIpHitsUpdatedUtc = DateTime.UtcNow;
+
         if (result.DistinctMatchedIps == 0)
         {
             ConsoleEx.Warn("None of the suspicious IPs were found with UserId != 0 in the scanned logs.");
-            session.PlatformAuthedIpHits = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            session.PlatformAuthedIpHitsUpdatedUtc = DateTime.UtcNow;
-            ConsoleEx.Pause();
+            ConsoleEx.Success("Authenticated IP cache updated (0 matches).");
+            ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
@@ -169,12 +185,9 @@ public static class PlatformOptions
 
         AnsiConsole.Write(table);
 
-        session.PlatformAuthedIpHits = result.HitsByIp.ToDictionary(k => k.Key, v => v.Value.Total, StringComparer.OrdinalIgnoreCase);
-        session.PlatformAuthedIpHitsUpdatedUtc = DateTime.UtcNow;
-
         AnsiConsole.WriteLine();
-        ConsoleEx.Success($"Saved authenticated IP cache: {session.PlatformAuthedIpHits.Count} IPs.");
-        ConsoleEx.Pause();
+        ConsoleEx.Success($"Authenticated IP cache updated: {session.PlatformAuthedIpHits.Count} IP(s).");
+        ConsoleEx.Pause("Press Enter to return...");
     }
 
     private static void WriteTopTable(string title, IReadOnlyList<(string Ip, int Hits)> top, int maxRows)
@@ -210,6 +223,7 @@ public static class PlatformOptions
     private static (int Added, int Updated) UpsertSelections(List<SavedSelection> savedSelections, PlatformSuspiciousScanResult result)
     {
         int added = 0, updated = 0;
+        var now = DateTime.UtcNow;
 
         foreach (var typeKvp in result.EffectiveIpCountsByErrorType)
         {
@@ -225,7 +239,7 @@ public static class PlatformOptions
                 var hits = counts[i].Value;
 
                 var endpoint = $"Platform | {errorType}";
-                var source = "Platform";
+                const string source = "Platform";
                 var rank = i + 1;
 
                 var idx = savedSelections.FindIndex(s =>
@@ -234,7 +248,7 @@ public static class PlatformOptions
                     string.Equals(s.IP, ip, StringComparison.OrdinalIgnoreCase));
 
                 var item = new SavedSelection(
-                    SavedAtUtc: DateTime.UtcNow,
+                    SavedAtUtc: now,
                     Source: source,
                     Endpoint: endpoint,
                     Rank: rank,
