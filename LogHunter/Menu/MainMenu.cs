@@ -1,4 +1,5 @@
-﻿using LogHunter.Services;
+﻿// Menus/MainMenu.cs
+using LogHunter.Services;
 using LogHunter.Utils;
 using Spectre.Console;
 
@@ -20,7 +21,7 @@ public sealed class MainMenu : IMenu
         {
             new ConsoleEx.MenuItem("ALB", "AWS Application Load Balancer log tools.\n(Placeholder hint)"),
             new ConsoleEx.MenuItem("IIS", "IIS log analysis tools.\n(Placeholder hint for now)"),
-            new ConsoleEx.MenuItem("Platform (placeholder)", "Future: OutSystems platform log analysis.\n(Placeholder hint)"),
+            new ConsoleEx.MenuItem("Platform", "OutSystems platform log analysis tools.\nSuspicious requests, errors, trends, and more."),
 
             new ConsoleEx.MenuItem("Check IP Report (AbuseIP)", "Query AbuseIPDB for reputation details on one or more IPs.\n(Placeholder hint)"),
 
@@ -45,7 +46,7 @@ public sealed class MainMenu : IMenu
                 return Task.FromResult<IMenu?>(new IisMenu(_session));
 
             case 2:
-                return Task.FromResult<IMenu?>(new PlaceholderMenu(_session, "Platform (placeholder)"));
+                return Task.FromResult<IMenu?>(new PlatformMenu(_session));
 
             case 3:
                 return Task.FromResult<IMenu?>(new AbuseIpMenu(_session));

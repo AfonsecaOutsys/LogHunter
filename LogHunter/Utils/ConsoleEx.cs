@@ -1,5 +1,10 @@
-﻿using Spectre.Console;
+﻿// Utils/ConsoleEx.cs  (FIXED)
+// Only changes vs your paste:
+// - Added: using System.Linq;  (needed for Skip/Max on IEnumerable in ShowClownEasterEgg)
+// - Tiny safety: guard SetCursorPosition row at the end (avoid negative if a weird terminal reports 0 height)
+using Spectre.Console;
 using Spectre.Console.Rendering;
+using System.Linq;
 using System.Text;
 
 namespace LogHunter.Utils;
@@ -368,7 +373,7 @@ public static class ConsoleEx
             }
         }
 
-        return true; // has all mods but not our key? consume to avoid weirdness
+        return true; // consume other Ctrl+Shift+Alt keys to avoid weirdness
     }
 
     private static void ShowClownEasterEgg()
@@ -439,7 +444,9 @@ public static class ConsoleEx
 
             WriteCentered(h - 1, "BOOMER");
 
-            Console.SetCursorPosition(0, h - 1);
+            // safety: if some terminal lies about height, don't go negative
+            var lastRow = Math.Max(0, Console.WindowHeight - 1);
+            Console.SetCursorPosition(0, lastRow);
             Console.ReadLine();
         }
         finally

@@ -27,4 +27,8 @@ public HashSet<string> IisBurstIps { get; } = new(StringComparer.OrdinalIgnoreCa
 
         IisBurstIpsUpdatedUtc = DateTime.UtcNow;
     }
+    public Dictionary<string, int>? PlatformSuspiciousIpHits { get; set; }
+    public DateTime? PlatformSuspiciousIpHitsUpdatedUtc { get; set; }
+    public Dictionary<string, int>? PlatformAuthedIpHits { get; set; }
+    public DateTime? PlatformAuthedIpHitsUpdatedUtc { get; set; }
 }

@@ -30,6 +30,11 @@ public sealed class AbuseIpMenu : IMenu
             ? "never"
             : _session.IisBurstIpsUpdatedUtc.Value.ToString("yyyy-MM-dd HH:mm:ss") + "Z";
 
+        var platCount = _session.PlatformSuspiciousIpHits?.Count ?? 0;
+        var platUpdated = _session.PlatformSuspiciousIpHitsUpdatedUtc is null
+            ? "never"
+            : _session.PlatformSuspiciousIpHitsUpdatedUtc.Value.ToString("yyyy-MM-dd HH:mm:ss") + "Z";
+
         var items = new[]
         {
             new ConsoleEx.MenuItem(
@@ -39,6 +44,10 @@ public sealed class AbuseIpMenu : IMenu
             new ConsoleEx.MenuItem(
                 $"Check IPs from IIS Bursts Session ({burstCount})",
                 $"Uses the last saved burst IP set from IIS → Find Bursts Patterns.\nLast updated: {burstUpdated}\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
+
+            new ConsoleEx.MenuItem(
+                $"Check IPs from Platform Suspicious Session ({platCount})",
+                $"Uses the last saved IP set from Platform → Suspicious requests → extract IPs.\nLast updated: {platUpdated}\nUsing API key: {keySource}.\nMaxAgeInDays: {cfg.MaxAgeInDays}"),
 
             new ConsoleEx.MenuItem(
                 "Set/Update API key (writes config)",
@@ -64,10 +73,14 @@ public sealed class AbuseIpMenu : IMenu
                 return this;
 
             case 2:
-                await ConfigureAsync(ct).ConfigureAwait(false);
+                await CheckFromPlatformSuspiciousSessionAsync(ct).ConfigureAwait(false);
                 return this;
 
             case 3:
+                await ConfigureAsync(ct).ConfigureAwait(false);
+                return this;
+
+            case 4:
                 return new MainMenu(_session);
 
             default:
@@ -176,6 +189,70 @@ public sealed class AbuseIpMenu : IMenu
         }
 
         await CheckIpsAsync(ipsToCheck, sourceLabel: "IIS Bursts Session", ct).ConfigureAwait(false);
+    }
+
+    private async Task CheckFromPlatformSuspiciousSessionAsync(CancellationToken ct)
+    {
+        ConsoleEx.Header("AbuseIP • Platform Suspicious Session", $"Workspace: {_session.Root}");
+
+        var dict = _session.PlatformSuspiciousIpHits;
+        var updated = _session.PlatformSuspiciousIpHitsUpdatedUtc;
+
+        if (dict is null || dict.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no platform suspicious IPs saved in session)[/]");
+            AnsiConsole.MarkupLine("[dim]Run Platform → Suspicious requests → extract IPs to populate this session set.[/]");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"[dim]Platform suspicious IPs in session:[/] {dict.Count}");
+        AnsiConsole.MarkupLine($"[dim]Last updated:[/] {(updated is null ? "unknown" : updated.Value.ToString("yyyy-MM-dd HH:mm:ss") + "Z")}");
+        AnsiConsole.WriteLine();
+
+        var choices = dict
+            .OrderByDescending(kvp => kvp.Value)
+            .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(800)
+            .Select(kvp => new IpChoice(kvp.Key, kvp.Value))
+            .ToList();
+
+        var selectedIps = AnsiConsole.Prompt(
+            new MultiSelectionPrompt<IpChoice>()
+                .Title("Select IPs to check (space to toggle, enter to run):")
+                .PageSize(18)
+                .WrapAround()
+                .NotRequired()
+                .InstructionsText("[grey](tip: include [[Select ALL]] to quickly pick everything; list is capped to top 800 by hits)[/]")
+                .AddChoices(new[] { new IpChoice(SelectAllSentinel, -1) }.Concat(choices))
+                .UseConverter(x =>
+                {
+                    if (x.Ip == SelectAllSentinel) return "[bold][[Select ALL]][/]";
+                    return $"{x.Ip} [grey]({x.Hits})[/]";
+                }));
+
+        if (selectedIps.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey](no IPs selected)[/]");
+            ConsoleEx.Pause();
+            return;
+        }
+
+        List<string> ipsToCheck;
+        if (selectedIps.Any(x => x.Ip == SelectAllSentinel))
+        {
+            ipsToCheck = dict.Keys.OrderBy(ip => ip, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        else
+        {
+            ipsToCheck = selectedIps
+                .Select(x => x.Ip)
+                .Where(ip => ip != SelectAllSentinel)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        await CheckIpsAsync(ipsToCheck, sourceLabel: "Platform Suspicious Session", ct).ConfigureAwait(false);
     }
 
     private async Task CheckFromOutputCsvAsync(CancellationToken ct)
