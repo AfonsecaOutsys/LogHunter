@@ -103,6 +103,23 @@ internal static class Program
 
             AppFolders.Ensure();
 
+            //start part
+            var asm = Assembly.GetExecutingAssembly();
+            var all = asm.GetManifestResourceNames();
+
+            AnsiConsole.MarkupLine("[yellow]Embedded resources containing 'tabulator':[/]");
+            var hits = all.Where(n => n.Contains("tabulator", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (hits.Count == 0)
+            {
+                AnsiConsole.MarkupLine("  [red](none found)[/]");
+            }
+            else
+            {
+                foreach (var n in hits)
+                    AnsiConsole.MarkupLine("  [dim]" + Markup.Escape(n) + "[/]");
+            }
+            AnsiConsole.WriteLine();//end part
+
             AnsiConsole.MarkupLine($"[bold]LogHunter[/] [dim]{version}[/]");
             AnsiConsole.MarkupLine($"[dim]Workspace:[/] {Markup.Escape(root)}");
             AnsiConsole.MarkupLine("[dim]Tip:[/] Ctrl+C to exit");

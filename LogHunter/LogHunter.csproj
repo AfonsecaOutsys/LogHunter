@@ -1,40 +1,41 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<!-- Product/Versioning -->
 		<AssemblyName>LogHunter</AssemblyName>
 		<RootNamespace>LogHunter</RootNamespace>
 
-		<!-- Single source of truth for version -->
 		<Version>0.1.0</Version>
 		<InformationalVersion>0.1.0</InformationalVersion>
 		<AssemblyVersion>0.1.0.0</AssemblyVersion>
 		<FileVersion>0.1.0.0</FileVersion>
+		<ApplicationIcon>Assets\LogHunter.ico</ApplicationIcon>
 
 		<OutputType>Exe</OutputType>
 		<TargetFramework>net8.0</TargetFramework>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 
-		<!-- Publish as a single standalone EXE -->
 		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
 		<SelfContained>true</SelfContained>
 		<PublishSingleFile>true</PublishSingleFile>
 
-		<!-- Pull native deps into the EXE and self-extract at runtime -->
 		<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
 		<EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
 
-		<!-- Windows UX -->
 		<PublishTrimmed>false</PublishTrimmed>
 		<InvariantGlobalization>false</InvariantGlobalization>
 
-		<!-- Don’t ship debug symbols -->
 		<DebugType>none</DebugType>
 		<DebugSymbols>false</DebugSymbols>
-
-		<!-- Optional later (icon): <ApplicationIcon>Assets\LogHunter.ico</ApplicationIcon> -->
 	</PropertyGroup>
+
+	<!-- Embed Tabulator assets (and make sure they are not copied as loose files) -->
+	<ItemGroup>
+		<EmbeddedResource Include="Resources\Tabulator\tabulator.min.js" />
+		<EmbeddedResource Include="Resources\Tabulator\tabulator.min.css" />
+		<None Update="Resources\Tabulator\tabulator.min.js" CopyToOutputDirectory="Never" />
+		<None Update="Resources\Tabulator\tabulator.min.css" CopyToOutputDirectory="Never" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="ExcelDataReader" Version="3.8.0" />
