@@ -29,6 +29,7 @@ public static class AlbDownload
         WriteIndented = true
     };
 
+    // Keep enum values for backwards compatibility with existing saved configs.
     private enum AlbScope { Normal, Internal }
 
     private sealed record AwsCreds(string AccessKeyId, string SecretAccessKey, string SessionToken);
@@ -38,12 +39,21 @@ public static class AlbDownload
         public string Name { get; set; } = ""; // file name / selection label
         public string Bucket { get; set; } = "";
         public string AlbId { get; set; } = ""; // base id e.g. ALB226963
-        public AlbScope Scope { get; set; } = AlbScope.Normal; // Normal or Internal
+        public AlbScope Scope { get; set; } = AlbScope.Normal; // External (Normal) or Internal
         public string AccountId { get; set; } = "";
         public string Region { get; set; } = "";
         public bool IsSentry { get; set; } // standard vs sentry prefix root
         public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
     }
+
+    // Bright green prompt style
+    private const string PromptStyle = "bold lime";
+
+    private static string GM(string text)
+        => $"[{PromptStyle}]{Markup.Escape(text)}[/]";
+
+    private static void PromptInline(string label)
+        => AnsiConsole.Markup($"[{PromptStyle}]{Markup.Escape(label)}[/] ");
 
     public static async Task RunAsync()
     {
@@ -81,7 +91,7 @@ public static class AlbDownload
                 "Return to the ALB menu.")
         };
 
-        var mode = ConsoleEx.Menu("ALB download", modeItems, pageSize: 12);
+        var mode = ConsoleEx.Menu(GM("ALB download"), modeItems, pageSize: 12, titleIsMarkup: true);
         if (mode is null || mode.Value == 2)
             return;
 
@@ -126,8 +136,8 @@ public static class AlbDownload
         try
         {
             AnsiConsole.WriteLine();
-            startUtc = SpectreDateTimePicker.PickUtc("Start (UTC)", startDefault);
-            endUtc = SpectreDateTimePicker.PickUtc("End (UTC)", endDefault, minUtc: startUtc);
+            startUtc = SpectreDateTimePicker.PickUtc("START DATE (UTC)", startDefault);
+            endUtc = SpectreDateTimePicker.PickUtc("END DATE (UTC)", endDefault, minUtc: startUtc);
         }
         catch (OperationCanceledException)
         {
@@ -228,7 +238,6 @@ public static class AlbDownload
             }
         }
 
-        // Enumerate downloaded .gz
         var allGz = Directory.Exists(runFolder)
             ? Directory.EnumerateFiles(runFolder, "*.gz", SearchOption.AllDirectories).ToList()
             : new List<string>();
@@ -243,7 +252,7 @@ public static class AlbDownload
         }
 
         // -----------------------------
-        // Prune outside timeframe (based on overlap of [stamp-5min, stamp])
+        // Prune outside timeframe
         // -----------------------------
         var kept = 0;
         var deleted = 0;
@@ -400,7 +409,7 @@ public static class AlbDownload
         var items = ordered
             .Select(c =>
             {
-                var scope = c.Scope == AlbScope.Internal ? "Internal" : "Normal";
+                var scope = c.Scope == AlbScope.Internal ? "Internal" : "External";
                 var sentry = c.IsSentry ? "Sentry" : "Standard";
 
                 var label = $"{c.Name}  |  {c.Region}  |  {scope}  |  {sentry}  |  {c.AlbId}";
@@ -419,7 +428,7 @@ public static class AlbDownload
 
         items.Add(new ConsoleEx.MenuItem("Cancel", "Return without selecting a configuration."));
 
-        var choice = ConsoleEx.Menu("Select a configuration", items, pageSize: 12);
+        var choice = ConsoleEx.Menu(GM("Select a configuration"), items, pageSize: 12, titleIsMarkup: true);
         if (choice is null) return null;
 
         var idx = choice.Value;
@@ -435,12 +444,12 @@ public static class AlbDownload
 
         var scopeItems = new[]
         {
-            new ConsoleEx.MenuItem("Normal", "ALB key will be exactly the ALB id (e.g., ALB226963)."),
+            new ConsoleEx.MenuItem("External", "ALB key will be exactly the ALB id (e.g., ALB226963)."),
             new ConsoleEx.MenuItem("Internal", "ALB key will use the -internal suffix (e.g., ALB226963-internal)."),
             new ConsoleEx.MenuItem("Cancel", "Return without creating a configuration.")
         };
 
-        var scopePick = ConsoleEx.Menu("ALB scope", scopeItems, pageSize: 12);
+        var scopePick = ConsoleEx.Menu(GM("ALB scope"), scopeItems, pageSize: 12, titleIsMarkup: true);
         if (scopePick is null || scopePick.Value == 2) return null;
 
         var scope = scopePick.Value == 1 ? AlbScope.Internal : AlbScope.Normal;
@@ -458,26 +467,14 @@ public static class AlbDownload
         var account = ReadRequiredLine("AWS account ID (12 digits):");
         if (account is null) return null;
 
+        // Always derive region when possible (no prompt)
         var derivedRegion = TryDeriveRegionFromBucket(bucket);
         string region;
 
         if (!string.IsNullOrWhiteSpace(derivedRegion))
         {
-            ConsoleEx.Info($"Derived region from bucket: {derivedRegion}");
-
-            var useDerived = PromptYesNoWithEsc("Use derived region?", defaultYes: true);
-            if (useDerived is null) return null;
-
-            if (useDerived.Value)
-            {
-                region = derivedRegion!;
-            }
-            else
-            {
-                var reg = ReadRequiredLine("Region (e.g. eu-west-1):");
-                if (reg is null) return null;
-                region = reg;
-            }
+            region = derivedRegion!;
+            ConsoleEx.Info($"Region (derived from bucket): {region}");
         }
         else
         {
@@ -487,7 +484,8 @@ public static class AlbDownload
         }
 
         var defaultName = scope == AlbScope.Internal ? $"{albId}-internal" : albId;
-        var nameMaybe = ConsoleEx.ReadLineWithEsc($"Config name (default: {defaultName}):", trim: true);
+
+        var nameMaybe = ReadLineWithEscGreen($"Config name (default: {defaultName}):", trim: true);
         if (nameMaybe is null) return null;
 
         var name = string.IsNullOrWhiteSpace(nameMaybe) ? defaultName : nameMaybe;
@@ -555,11 +553,19 @@ public static class AlbDownload
         return m.Groups["region"].Value;
     }
 
+    private static string? ReadLineWithEscGreen(string label, bool trim)
+    {
+        PromptInline(label);
+        var v = ReadSingleLineWithEsc(prefix: "");
+        if (v is null) return null;
+        return trim ? v.Trim() : v;
+    }
+
     private static string? ReadRequiredLine(string label)
     {
         while (true)
         {
-            var v = ConsoleEx.ReadLineWithEsc(label, trim: true);
+            var v = ReadLineWithEscGreen(label, trim: true);
             if (v is null) return null;
 
             if (!string.IsNullOrWhiteSpace(v))
@@ -578,7 +584,7 @@ public static class AlbDownload
             new ConsoleEx.MenuItem("Cancel", "Return without making a choice.")
         };
 
-        var pick = ConsoleEx.Menu(title, items, pageSize: 10);
+        var pick = ConsoleEx.Menu(GM(title), items, pageSize: 10, titleIsMarkup: true);
         if (pick is null || pick.Value == 2) return null;
         return pick.Value == 0;
     }
@@ -598,9 +604,9 @@ public static class AlbDownload
         }
 
         AnsiConsole.WriteLine();
-        Console.WriteLine("Paste the 3 AWS env lines (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN).");
-        Console.WriteLine("Finish with an empty line. Press Esc to cancel.");
-        Console.WriteLine();
+        AnsiConsole.MarkupLine(GM("Paste the 3 AWS env lines (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN)."));
+        AnsiConsole.MarkupLine(GM("Finish with an empty line. Press Esc to cancel."));
+        AnsiConsole.WriteLine();
 
         var pasted = ReadMultilineWithEsc();
         if (pasted is null)
@@ -625,7 +631,6 @@ public static class AlbDownload
             return null;
         }
 
-        // Tiny confirmation (do not echo secrets)
         var ak = parsed.AccessKeyId!;
         var suffix = ak.Length >= 4 ? ak[^4..] : ak;
 
@@ -641,17 +646,14 @@ public static class AlbDownload
         return _sessionCreds;
     }
 
-    /// <summary>
-    /// Reads multiple lines. Empty line ends input. ESC cancels and returns null.
-    /// Basic editing supported (Backspace).
-    /// </summary>
     private static string? ReadMultilineWithEsc()
     {
         var sbAll = new StringBuilder();
 
         while (true)
         {
-            var line = ReadSingleLineWithEsc(prefix: "> ");
+            AnsiConsole.Markup($"[{PromptStyle}]> [/]");
+            var line = ReadSingleLineWithEsc(prefix: "");
             if (line is null)
                 return null;
 
@@ -662,9 +664,6 @@ public static class AlbDownload
         }
     }
 
-    /// <summary>
-    /// Reads a single line with ESC cancel. ENTER returns the line (can be empty).
-    /// </summary>
     private static string? ReadSingleLineWithEsc(string prefix)
     {
         if (!string.IsNullOrEmpty(prefix))
@@ -698,7 +697,6 @@ public static class AlbDownload
                 continue;
             }
 
-            // Ctrl+U clears line
             if (key.Modifiers.HasFlag(ConsoleModifiers.Control) && key.Key == ConsoleKey.U)
             {
                 while (sb.Length > 0)
@@ -725,14 +723,10 @@ public static class AlbDownload
         {
             var line = raw.Trim();
 
-            // Windows cmd
             if (line.StartsWith("SET ", StringComparison.OrdinalIgnoreCase)) line = line[4..].Trim();
-            // PowerShell
             if (line.StartsWith("$env:", StringComparison.OrdinalIgnoreCase)) line = line[5..].Trim();
-            // Bash
             if (line.StartsWith("export ", StringComparison.OrdinalIgnoreCase)) line = line[7..].Trim();
 
-            // allow KEY=VALUE OR KEY: VALUE
             int idxEq = line.IndexOf('=');
             int idxCol = line.IndexOf(':');
 
@@ -756,7 +750,7 @@ public static class AlbDownload
     }
 
     // =========================
-    // AWS Execution (fast path)
+    // AWS Execution
     // =========================
 
     private static bool AwsExists(string? path)
@@ -770,14 +764,12 @@ public static class AlbDownload
             if (AwsExists(_awsExePathCached)) return _awsExePathCached;
         }
 
-        // 1) Try "aws" from PATH
         if (CanStartAwsFromPath())
         {
             _awsExePathCached = "aws";
             return _awsExePathCached;
         }
 
-        // 2) where aws
         var fromWhere = TryGetAwsFromWhere();
         if (AwsExists(fromWhere))
         {
@@ -785,7 +777,6 @@ public static class AlbDownload
             return _awsExePathCached;
         }
 
-        // 3) common paths
         var p1 = @"C:\Program Files\Amazon\AWSCLIV2\aws.exe";
         if (AwsExists(p1)) { _awsExePathCached = p1; return _awsExePathCached; }
 
@@ -870,7 +861,6 @@ public static class AlbDownload
     {
         Directory.CreateDirectory(destFolder);
 
-        // Quiet + fast
         var args =
             $"s3 sync \"{s3Uri}\" \"{destFolder}\" --exclude \"*\" --include \"*.gz\" --no-progress --only-show-errors";
 
@@ -900,7 +890,6 @@ public static class AlbDownload
             if (proc.ExitCode == 0)
                 return true;
 
-            // If it failed, rerun capturing stderr for visibility
             var (ok2, _, err2) = await RunAwsCapturedAsync(awsExePath, args, creds).ConfigureAwait(false);
             if (!ok2 && !string.IsNullOrWhiteSpace(err2))
                 AnsiConsole.MarkupLine($"[red]aws s3 sync error:[/] {Markup.Escape(err2.Trim())}");
@@ -978,8 +967,8 @@ public static class AlbDownload
         var m = AlbTimestampRegex.Match(fileNameOrKey);
         if (!m.Success) return null;
 
-        var ymd = m.Groups[1].Value; // YYYYMMDD
-        var hm = m.Groups[2].Value;  // HHMM
+        var ymd = m.Groups[1].Value;
+        var hm = m.Groups[2].Value;
 
         if (!int.TryParse(ymd[..4], out var year)) return null;
         if (!int.TryParse(ymd[4..6], out var month)) return null;

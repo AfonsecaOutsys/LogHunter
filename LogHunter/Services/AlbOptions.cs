@@ -626,7 +626,14 @@ public static class AlbOptions
             return;
         }
 
-        var target = ConsoleEx.Prompt("Target filter (IP or fragment, e.g., 10.0.0.12):");
+        // ✅ Esc-cancellable input
+        var target = ConsoleEx.ReadLineWithEsc("Target filter (IP or fragment, e.g., 10.0.0.12) [Esc to go back]:", trim: true);
+        if (target is null)
+        {
+            ConsoleEx.Info("Cancelled.");
+            return; // go back to previous menu immediately
+        }
+
         if (string.IsNullOrWhiteSpace(target))
         {
             ConsoleEx.Warn("No target provided.");
@@ -651,73 +658,99 @@ public static class AlbOptions
         var stats = new Dictionary<string, UriAgg>(StringComparer.Ordinal);
         var totalBytes = SumFileSizesSafe(files);
 
-        await AnsiConsole.Progress()
-            .AutoClear(false)
-            .Columns(new ProgressColumn[]
-            {
+        // ✅ Ctrl+C cancels scanning and returns (doesn't kill the app)
+        var cancelled = false;
+        ConsoleCancelEventHandler? cancelHandler = (_, e) =>
+        {
+            e.Cancel = true;
+            cancelled = true;
+        };
+
+        Console.CancelKeyPress += cancelHandler;
+
+        try
+        {
+            await AnsiConsole.Progress()
+                .AutoClear(false)
+                .Columns(new ProgressColumn[]
+                {
                 new TaskDescriptionColumn(),
                 new ProgressBarColumn(),
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
                 new SpinnerColumn()
-            })
-            .StartAsync(async ctx =>
-            {
-                var task = ctx.AddTask("Scanning ALB logs", maxValue: Math.Max(1, totalBytes));
-
-                foreach (var file in files)
+                })
+                .StartAsync(async ctx =>
                 {
-                    using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1 << 20, FileOptions.SequentialScan);
-                    using var sr = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
+                    var task = ctx.AddTask("Scanning ALB logs (Ctrl+C to cancel)", maxValue: Math.Max(1, totalBytes));
 
-                    long lastReportedPos = 0;
-                    const long chunk = 64L * 1024 * 1024;
-
-                    while (true)
+                    foreach (var file in files)
                     {
-                        var line = await sr.ReadLineAsync().ConfigureAwait(false);
-                        if (line is null) break;
-                        if (line.Length == 0) continue;
+                        if (cancelled) break;
 
-                        var targetHost = AlbScanner.ExtractAlbTargetHost(line);
-                        if (targetHost is null) continue;
-                        if (targetHost.IndexOf(target, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1 << 20, FileOptions.SequentialScan);
+                        using var sr = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
 
-                        var dur = AlbScanner.ExtractAlbTargetProcessingTimeSeconds(line);
-                        if (dur is null || dur.Value < 0) continue;
+                        long lastReportedPos = 0;
+                        const long chunk = 64L * 1024 * 1024;
 
-                        var uri = AlbScanner.ExtractAlbUriNoQuery(line);
-                        if (string.IsNullOrEmpty(uri)) continue;
-
-                        if (!stats.TryGetValue(uri, out var agg))
-                            agg = default;
-
-                        agg.Count++;
-                        agg.SumSeconds += dur.Value;
-                        if (dur.Value > agg.MaxSeconds) agg.MaxSeconds = dur.Value;
-
-                        stats[uri] = agg;
-
-                        var pos = fs.Position;
-                        if (pos - lastReportedPos >= chunk)
+                        while (!cancelled)
                         {
-                            task.Increment(pos - lastReportedPos);
-                            lastReportedPos = pos;
+                            var line = await sr.ReadLineAsync().ConfigureAwait(false);
+                            if (line is null) break;
+                            if (line.Length == 0) continue;
+
+                            var targetHost = AlbScanner.ExtractAlbTargetHost(line);
+                            if (targetHost is null) continue;
+                            if (targetHost.IndexOf(target, StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                            var dur = AlbScanner.ExtractAlbTargetProcessingTimeSeconds(line);
+                            if (dur is null || dur.Value < 0) continue;
+
+                            var uri = AlbScanner.ExtractAlbUriNoQuery(line);
+                            if (string.IsNullOrEmpty(uri)) continue;
+
+                            if (!stats.TryGetValue(uri, out var agg))
+                                agg = default;
+
+                            agg.Count++;
+                            agg.SumSeconds += dur.Value;
+                            if (dur.Value > agg.MaxSeconds) agg.MaxSeconds = dur.Value;
+
+                            stats[uri] = agg;
+
+                            var pos = fs.Position;
+                            if (pos - lastReportedPos >= chunk)
+                            {
+                                task.Increment(pos - lastReportedPos);
+                                lastReportedPos = pos;
+                            }
                         }
+
+                        var remaining = fs.Length - lastReportedPos;
+                        if (remaining > 0)
+                            task.Increment(remaining);
                     }
 
-                    var remaining = fs.Length - lastReportedPos;
-                    if (remaining > 0)
-                        task.Increment(remaining);
-                }
+                    if (task.Value < task.MaxValue)
+                        task.Value = task.MaxValue;
 
-                if (task.Value < task.MaxValue)
-                    task.Value = task.MaxValue;
+                    task.StopTask();
+                });
 
-                task.StopTask();
-            });
+            AnsiConsole.WriteLine();
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancelHandler;
+        }
 
-        AnsiConsole.WriteLine();
+        if (cancelled)
+        {
+            ConsoleEx.Warn("Cancelled.");
+            ConsoleEx.Pause("Press Enter to return...");
+            return;
+        }
 
         if (stats.Count == 0)
         {

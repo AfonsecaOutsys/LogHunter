@@ -144,7 +144,7 @@ public static class ConsoleEx
     /// Keys: Up/Down move, 1-9 jump highlight (does not select), Enter selects, Esc returns null.
     /// Returns selected index or null if cancelled.
     /// </summary>
-    public static int? Menu(string title, IReadOnlyList<MenuItem> items, int pageSize = 12)
+    public static int? Menu(string title, IReadOnlyList<MenuItem> items, int pageSize = 10, bool titleIsMarkup = false)
     {
         if (items.Count == 0)
             return null;
@@ -152,14 +152,14 @@ public static class ConsoleEx
         var selectedIndex = 0;
         int? result = null;
 
-        var initial = BuildMenu(title, items, selectedIndex, pageSize);
+        var initial = BuildMenu(title, items, selectedIndex, pageSize, titleIsMarkup);
 
         AnsiConsole.Live(initial)
             .AutoClear(true)
             .Start(ctx =>
             {
                 // Force first paint (fixes “blank until keypress”)
-                ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
+                ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize, titleIsMarkup));
                 ctx.Refresh();
 
                 while (true)
@@ -173,7 +173,7 @@ public static class ConsoleEx
                     // Easter egg (Ctrl+Shift+Alt+F then G)
                     if (TryHandleEasterEgg(key))
                     {
-                        ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
+                        ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize, titleIsMarkup));
                         ctx.Refresh();
                         continue;
                     }
@@ -187,7 +187,7 @@ public static class ConsoleEx
                     if (key.Key == ConsoleKey.UpArrow)
                     {
                         selectedIndex = (selectedIndex - 1 + items.Count) % items.Count;
-                        ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
+                        ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize, titleIsMarkup));
                         ctx.Refresh();
                         continue;
                     }
@@ -195,7 +195,7 @@ public static class ConsoleEx
                     if (key.Key == ConsoleKey.DownArrow)
                     {
                         selectedIndex = (selectedIndex + 1) % items.Count;
-                        ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
+                        ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize, titleIsMarkup));
                         ctx.Refresh();
                         continue;
                     }
@@ -213,7 +213,7 @@ public static class ConsoleEx
                         if (idx < items.Count)
                         {
                             selectedIndex = idx; // jump highlight only
-                            ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize));
+                            ctx.UpdateTarget(BuildMenu(title, items, selectedIndex, pageSize, titleIsMarkup));
                             ctx.Refresh();
                         }
                     }
@@ -238,7 +238,7 @@ public static class ConsoleEx
             _ => null
         };
 
-    private static IRenderable BuildMenu(string title, IReadOnlyList<MenuItem> items, int selectedIndex, int pageSize)
+    private static IRenderable BuildMenu(string title, IReadOnlyList<MenuItem> items, int selectedIndex, int pageSize, bool titleIsMarkup)
     {
         // Window over items
         var half = Math.Max(1, pageSize / 2);
@@ -286,7 +286,9 @@ public static class ConsoleEx
         // Bottom: keys box
         var keysPanel = BuildKeysPanel();
 
-        var rule = new Rule($"[bold]{Escape(title)}[/]");
+        // ✅ Title rule: allow markup when requested
+        var ruleTitle = titleIsMarkup ? title : $"[bold]{Escape(title)}[/]";
+        var rule = new Rule(ruleTitle);
         rule.RuleStyle("grey");
 
         return new Rows(rule, columns, new Padder(keysPanel).PadTop(1));
