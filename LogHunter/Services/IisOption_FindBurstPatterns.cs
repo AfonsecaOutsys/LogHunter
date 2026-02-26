@@ -2,10 +2,14 @@
 using Spectre.Console;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,6 +18,12 @@ namespace LogHunter.Services;
 public static class IisOption_FindBurstPatterns
 {
     private const string SelectAllSentinel = "__ALL__";
+
+    // how many rows to show in Spectre (fast triage)
+    private const int SpectreTop = 20;
+
+    // safety cap for HTML report (avoid absurdly huge JSON on massive log sets)
+    private const int HtmlMaxRows = 5000;
 
     private sealed class BurstAgg
     {
@@ -100,6 +110,33 @@ public static class IisOption_FindBurstPatterns
         public required string OutPath { get; init; }
     }
 
+    // HTML rows for Tabulator
+    private sealed record BurstUri(string Uri, int Count);
+
+    private sealed record BurstRow(
+        int Rank,
+        string Id,
+        string StartUtc,
+        string Ip,
+        int SeverityScore,
+        string SeverityLabel,
+        string Flags,
+        int TotalDynamic,
+        int UniqueDynamicUris,
+        double FourxxPct,
+        int Post,
+        int Head,
+        int AvgMs,
+        int MaxMs,
+        string Ua,
+        int C2xx,
+        int C3xx,
+        int C4xx,
+        int C5xx,
+        List<BurstUri> TopUris,
+        string RawLog
+    );
+
     public static async Task RunAsync(SessionState session, CancellationToken ct = default)
     {
         var root = session.Root;
@@ -122,6 +159,19 @@ public static class IisOption_FindBurstPatterns
             return;
         }
 
+        // Tabulator assets (you placed them here)
+        var assetsDir = Path.Combine(root, "ALB", "configs", "_assets");
+        var tabJs = Path.Combine(assetsDir, "tabulator.min.js");
+        var tabCss = Path.Combine(assetsDir, "tabulator.min.css");
+        var tabulatorOk = File.Exists(tabJs) && File.Exists(tabCss);
+
+        if (!tabulatorOk)
+        {
+            ConsoleEx.Warn("Tabulator assets not found. HTML report will be skipped.");
+            AnsiConsole.MarkupLine($"[dim]Expected:[/]\n  {Markup.Escape(tabJs)}\n  {Markup.Escape(tabCss)}");
+            AnsiConsole.WriteLine();
+        }
+
         var bucketChoice = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("Bucket size for burst detection")
@@ -135,9 +185,9 @@ public static class IisOption_FindBurstPatterns
                 })
         );
 
-        var bucketSeconds = bucketChoice.StartsWith("10") ? 10
-                         : bucketChoice.StartsWith("30") ? 30
-                         : bucketChoice.StartsWith("300") ? 300
+        var bucketSeconds = bucketChoice.StartsWith("10", StringComparison.Ordinal) ? 10
+                         : bucketChoice.StartsWith("30", StringComparison.Ordinal) ? 30
+                         : bucketChoice.StartsWith("300", StringComparison.Ordinal) ? 300
                          : 60;
 
         var rateThreshold = (int)Math.Ceiling(2.0 * bucketSeconds);
@@ -280,7 +330,10 @@ public static class IisOption_FindBurstPatterns
             return;
         }
 
-        var bursts = aggs.Values
+        // Build candidates once, then:
+        // - Spectre shows top 20
+        // - HTML contains "all bursts" (capped)
+        var burstCandidates = aggs.Values
             .Select(a => new
             {
                 Agg = a,
@@ -295,10 +348,9 @@ public static class IisOption_FindBurstPatterns
             .ThenByDescending(x => x.Agg.UniqueDynamicUris)
             .ThenByDescending(x => x.Agg.C4xx)
             .ThenBy(x => x.Agg.StartUtc)
-            .Take(20)
             .ToList();
 
-        if (bursts.Count == 0)
+        if (burstCandidates.Count == 0)
         {
             ConsoleEx.Info("No bursts matched the current heuristics.");
             ConsoleEx.Info("Try a smaller bucket size or a wider time range.");
@@ -306,49 +358,54 @@ public static class IisOption_FindBurstPatterns
             return;
         }
 
+        var burstsForSpectre = burstCandidates.Take(SpectreTop).ToList();
+        var burstsForHtml = burstCandidates.Take(HtmlMaxRows).ToList();
+
         ConsoleEx.Header(
-            "IIS: Burst buckets (Top 20)",
-            $"Bucket: {bucketSeconds}s | Rate>={rateThreshold} dyn | Unique>={enumThreshold} | 4xx>={errorThreshold}");
+            $"IIS: Burst buckets (Top {Math.Min(SpectreTop, burstsForSpectre.Count)})",
+            $"Bucket: {bucketSeconds}s | Rate>={rateThreshold} dyn | Unique>={enumThreshold} | 4xx>={errorThreshold} | HTML rows: {Math.Min(HtmlMaxRows, burstCandidates.Count)}");
 
         var table = new Table()
             .RoundedBorder()
-            .AddColumn("[bold]Rank[/]")
+            .AddColumn(new TableColumn("[bold]#[/]").RightAligned())
             .AddColumn("[bold]Start (UTC)[/]")
             .AddColumn("[bold]IP[/]")
-            .AddColumn("[bold]Dyn[/]")
-            .AddColumn("[bold]Unique[/]")
-            .AddColumn("[bold]4xx%[/]")
-            .AddColumn("[bold]POST[/]")
-            .AddColumn("[bold]HEAD[/]")
-            .AddColumn("[bold]Avg ms[/]")
+            .AddColumn(new TableColumn("[bold]Sev[/]").Centered())
+            .AddColumn(new TableColumn("[bold]Req/min[/]").RightAligned())
+            .AddColumn(new TableColumn("[bold]Unique[/]").RightAligned())
+            .AddColumn(new TableColumn("[bold]4xx%[/]").RightAligned())
+            .AddColumn("[bold]Flags[/]")
+            .AddColumn(new TableColumn("[bold]Avg ms[/]").RightAligned())
             .AddColumn("[bold]UA[/]");
 
-        for (int i = 0; i < bursts.Count; i++)
+        for (int i = 0; i < burstsForSpectre.Count; i++)
         {
-            var a = bursts[i].Agg;
+            var a = burstsForSpectre[i].Agg;
+            var score = burstsForSpectre[i].SeverityScore;
+            var flags = BurstFlags(a, rateThreshold, enumThreshold, errorThreshold);
 
             table.AddRow(
-                (i + 1).ToString(),
+                (i + 1).ToString(CultureInfo.InvariantCulture),
                 a.StartUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
-                a.Ip,
+                Markup.Escape(a.Ip),
+                $"[{SeverityColor(score)}]{SeverityLabel(score)}[/]",
                 a.TotalDynamic.ToString("n0", CultureInfo.InvariantCulture),
                 a.UniqueDynamicUris.ToString("n0", CultureInfo.InvariantCulture),
                 (a.FourxxRatio * 100).ToString("0.0", CultureInfo.InvariantCulture),
-                a.Post.ToString("n0", CultureInfo.InvariantCulture),
-                a.Head.ToString("n0", CultureInfo.InvariantCulture),
+                $"[dim]{Markup.Escape(flags)}[/]",
                 a.AvgTimeMs.ToString("n0", CultureInfo.InvariantCulture),
-                Markup.Escape(Truncate(a.UaDisplay, 40))
+                Markup.Escape(Truncate(UaSummary(a), 40))
             );
         }
 
         AnsiConsole.Write(table);
         AnsiConsole.WriteLine();
 
-        // Save distinct burst IPs to session (replaces prior)
+        // Save distinct burst IPs to session: from ALL candidates (not only top 20)
         if (ConsoleEx.ReadYesNo("Save burst IPs (distinct) to session? This replaces the previous burst-IP list.", defaultYes: true))
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var b in bursts)
+            foreach (var b in burstCandidates)
                 set.Add(b.Agg.Ip);
 
             session.ReplaceIisBurstIps(set);
@@ -357,7 +414,7 @@ public static class IisOption_FindBurstPatterns
             AnsiConsole.WriteLine();
         }
 
-        // Selection (export)
+        // Selection (export): keep selecting from top 20 (what user just saw)
         var pick = new MultiSelectionPrompt<BurstPick>()
             .Title("Select burst bucket(s) to export raw lines")
             .NotRequired()
@@ -367,15 +424,15 @@ public static class IisOption_FindBurstPatterns
 
         pick.AddChoice(new BurstPick(SelectAllSentinel, "[bold][[Select ALL]][/] Export all bursts shown (Top 20)"));
 
-        for (int i = 0; i < bursts.Count; i++)
+        for (int i = 0; i < burstsForSpectre.Count; i++)
         {
-            var a = bursts[i].Agg;
+            var a = burstsForSpectre[i].Agg;
             var id = $"{a.Ip}|{a.StartUtc.Ticks}";
             var flags = BurstFlags(a, rateThreshold, enumThreshold, errorThreshold);
 
             pick.AddChoice(new BurstPick(
                 id,
-                $"{i + 1}. {a.StartUtc:yyyy-MM-dd HH:mm:ss}Z | {a.Ip} | dyn:{a.TotalDynamic} unique:{a.UniqueDynamicUris} 4xx:{a.C4xx} | {flags}"
+                $"{i + 1}. {a.StartUtc:yyyy-MM-dd HH:mm:ss}Z | {a.Ip} | {SeverityLabel(burstsForSpectre[i].SeverityScore)} | dyn:{a.TotalDynamic} unique:{a.UniqueDynamicUris} 4xx:{a.C4xx} | {flags}"
             ));
         }
 
@@ -389,7 +446,7 @@ public static class IisOption_FindBurstPatterns
 
         HashSet<string> selectedIds;
         if (selected.Any(x => x.Id == SelectAllSentinel))
-            selectedIds = bursts.Select(b => $"{b.Agg.Ip}|{b.Agg.StartUtc.Ticks}").ToHashSet(StringComparer.OrdinalIgnoreCase);
+            selectedIds = burstsForSpectre.Select(b => $"{b.Agg.Ip}|{b.Agg.StartUtc.Ticks}").ToHashSet(StringComparer.OrdinalIgnoreCase);
         else
             selectedIds = selected.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -402,13 +459,13 @@ public static class IisOption_FindBurstPatterns
         var windows = new List<BurstWindow>();
         int outRank = 1;
 
-        foreach (var b in bursts)
+        foreach (var b in burstsForSpectre)
         {
             var id = $"{b.Agg.Ip}|{b.Agg.StartUtc.Ticks}";
             if (!selectedIds.Contains(id))
                 continue;
 
-            var safeIp = b.Agg.Ip.Replace(":", "_");
+            var safeIp = b.Agg.Ip.Replace(":", "_", StringComparison.Ordinal);
             var fileName = $"burst_{outRank:00}_{safeIp}_{b.Agg.StartUtc:yyyyMMdd_HHmmss}Z_{bucketSeconds}s.log";
 
             windows.Add(new BurstWindow
@@ -427,7 +484,7 @@ public static class IisOption_FindBurstPatterns
 
         foreach (var w in windows)
         {
-            var sw = new StreamWriter(File.Create(w.OutPath));
+            var sw = new StreamWriter(File.Create(w.OutPath), Encoding.UTF8);
 
             if (firstMap is not null)
             {
@@ -499,12 +556,346 @@ public static class IisOption_FindBurstPatterns
         foreach (var sw in writers.Values)
             sw.Dispose();
 
+        // HTML report
+        string? htmlPath = null;
+        if (tabulatorOk)
+        {
+            // Map bucket ID -> local log link (only for exported top-20 selections)
+            var idToRelLog = windows.ToDictionary(
+                w => w.Id,
+                w => "./" + Path.GetFileName(w.OutPath),
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            var rows = new List<BurstRow>(burstsForHtml.Count);
+
+            for (int i = 0; i < burstsForHtml.Count; i++)
+            {
+                var a = burstsForHtml[i].Agg;
+                var id = $"{a.Ip}|{a.StartUtc.Ticks}";
+                var score = burstsForHtml[i].SeverityScore;
+                var flags = BurstFlags(a, rateThreshold, enumThreshold, errorThreshold);
+
+                idToRelLog.TryGetValue(id, out var rawLog);
+
+                rows.Add(new BurstRow(
+                    Rank: i + 1,
+                    Id: id,
+                    StartUtc: a.StartUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                    Ip: a.Ip,
+                    SeverityScore: score,
+                    SeverityLabel: SeverityLabel(score),
+                    Flags: flags,
+                    TotalDynamic: a.TotalDynamic,
+                    UniqueDynamicUris: a.UniqueDynamicUris,
+                    FourxxPct: Math.Round(a.FourxxRatio * 100.0, 1),
+                    Post: a.Post,
+                    Head: a.Head,
+                    AvgMs: a.AvgTimeMs,
+                    MaxMs: a.TimeTakenMaxMs,
+                    Ua: a.UaDisplay,
+                    C2xx: a.C2xx,
+                    C3xx: a.C3xx,
+                    C4xx: a.C4xx,
+                    C5xx: a.C5xx,
+                    TopUris: a.TopUris(10).Select(x => new BurstUri(x.Uri, x.Count)).ToList(),
+                    RawLog: rawLog ?? ""
+                ));
+            }
+
+            htmlPath = Path.Combine(batchDir, "burst_report.html");
+            WriteTabulatorReportHtml(
+                outHtmlPath: htmlPath,
+                batchDir: batchDir,
+                tabJsPath: tabJs,
+                tabCssPath: tabCss,
+                bucketSeconds: bucketSeconds,
+                rateThreshold: rateThreshold,
+                enumThreshold: enumThreshold,
+                errorThreshold: errorThreshold,
+                rows: rows
+            );
+        }
+
         ConsoleEx.Header("IIS: Burst export complete");
         AnsiConsole.MarkupLine($"[dim]Bucket:[/] {bucketSeconds}s");
         AnsiConsole.MarkupLine($"[dim]Exported lines:[/] {exported:n0}");
         AnsiConsole.MarkupLine($"[dim]Output folder:[/] {Markup.Escape(batchDir)}");
+
+        if (htmlPath is not null)
+        {
+            AnsiConsole.MarkupLine($"[dim]HTML report:[/] {Markup.Escape(htmlPath)}");
+            if (ConsoleEx.ReadYesNo("Open HTML report now?", defaultYes: true))
+                TryOpenFile(htmlPath);
+        }
+
         ConsoleEx.Pause("Press Enter to return...");
     }
+
+    // ---------------- HTML (Tabulator) ----------------
+
+    private static void WriteTabulatorReportHtml(
+        string outHtmlPath,
+        string batchDir,
+        string tabJsPath,
+        string tabCssPath,
+        int bucketSeconds,
+        int rateThreshold,
+        int enumThreshold,
+        int errorThreshold,
+        List<BurstRow> rows
+    )
+    {
+        var relJs = MakeRelativePath(batchDir, tabJsPath).Replace('\\', '/');
+        var relCss = MakeRelativePath(batchDir, tabCssPath).Replace('\\', '/');
+
+        var json = JsonSerializer.Serialize(rows, new JsonSerializerOptions
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            WriteIndented = false
+        });
+
+        var sb = new StringBuilder(96_000);
+
+        sb.AppendLine("<!doctype html>");
+        sb.AppendLine("<html><head><meta charset=\"utf-8\">");
+        sb.AppendLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+        sb.AppendLine("<title>IIS Burst Report</title>");
+        sb.AppendLine("<link rel=\"stylesheet\" href=\"" + HtmlEsc(relCss) + "\">");
+        sb.AppendLine("<style>");
+        sb.AppendLine(@"
+:root{--bg:#0b0f14;--fg:#e6edf3;--muted:#9aa4b2;--card:#111827;--line:#1f2937;--chip:#0f172a}
+*{box-sizing:border-box} body{margin:0;font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--fg)}
+.wrap{max-width:1300px;margin:22px auto;padding:0 16px}
+h1{font-size:18px;margin:0 0 8px}
+.sub{color:var(--muted);margin-bottom:14px}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:var(--card);border:1px solid var(--line);padding:10px;border-radius:12px;margin-bottom:12px}
+input[type=search]{flex:1;min-width:240px;background:#0b1220;color:var(--fg);border:1px solid var(--line);padding:8px 10px;border-radius:10px;outline:none}
+.chk{display:flex;gap:6px;align-items:center;color:var(--muted);user-select:none}
+.small{font-size:12px;color:var(--muted)}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:12px}
+.sev-low{background:#111827;border:1px solid #334155;color:#cbd5e1}
+.sev-med{background:#3b2f0b;border:1px solid #a16207;color:#fde68a}
+.sev-high{background:#3b1d0b;border:1px solid #c2410c;color:#fed7aa}
+.sev-crit{background:#3b0b0b;border:1px solid #b91c1c;color:#fecaca}
+.flag{display:inline-block;padding:2px 6px;border-radius:8px;background:var(--chip);border:1px solid var(--line);color:var(--muted);margin-right:6px;font-size:12px}
+.btn{background:#0b1220;border:1px solid var(--line);color:var(--fg);padding:6px 8px;border-radius:10px;cursor:pointer;font-size:12px;text-decoration:none;display:inline-block}
+.btn:hover{border-color:#334155}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.detail{padding:10px 12px;border-top:1px solid var(--line);background:#0b1220}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+pre{margin:0;background:#0b0f14;border:1px solid var(--line);padding:10px;border-radius:10px;overflow:auto;max-height:220px}
+");
+        sb.AppendLine("</style>");
+        sb.AppendLine("</head><body><div class=\"wrap\">");
+
+        sb.AppendLine("<h1>IIS Burst buckets</h1>");
+        sb.AppendLine("<div class=\"sub\">Bucket: <span class=\"mono\">" + bucketSeconds.ToString(CultureInfo.InvariantCulture) +
+                      "s</span> · Trigger: dyn ≥ <span class=\"mono\">" + rateThreshold.ToString(CultureInfo.InvariantCulture) +
+                      "</span>, unique ≥ <span class=\"mono\">" + enumThreshold.ToString(CultureInfo.InvariantCulture) +
+                      "</span>, 4xx ≥ <span class=\"mono\">" + errorThreshold.ToString(CultureInfo.InvariantCulture) + "</span></div>");
+
+        sb.AppendLine("<div class=\"toolbar\">");
+        sb.AppendLine("<input id=\"q\" type=\"search\" placeholder=\"Search IP, UA, flags, time...\">");
+        sb.AppendLine("<label class=\"chk\"><input type=\"checkbox\" class=\"f\" value=\"RATE\" checked> RATE</label>");
+        sb.AppendLine("<label class=\"chk\"><input type=\"checkbox\" class=\"f\" value=\"ENUM\" checked> ENUM</label>");
+        sb.AppendLine("<label class=\"chk\"><input type=\"checkbox\" class=\"f\" value=\"4XX\" checked> 4XX</label>");
+        sb.AppendLine("<label class=\"chk\"><input type=\"checkbox\" class=\"f\" value=\"POST\" checked> POST</label>");
+        sb.AppendLine("<label class=\"chk\"><input type=\"checkbox\" class=\"f\" value=\"HEAD\" checked> HEAD</label>");
+        sb.AppendLine("<span class=\"small\">(click a row for details; click headers to sort)</span>");
+        sb.AppendLine("</div>");
+
+        sb.AppendLine("<div id=\"tbl\"></div>");
+
+        sb.AppendLine("<script src=\"" + HtmlEsc(relJs) + "\"></script>");
+        sb.AppendLine("<script>");
+        sb.AppendLine("var DATA = " + json + ";");
+
+        // Keep JS free of template literals/backticks to avoid escaping hell.
+        sb.AppendLine(@"
+function sevClass(score){
+  if(score>=140) return 'sev-crit';
+  if(score>=95)  return 'sev-high';
+  if(score>=60)  return 'sev-med';
+  return 'sev-low';
+}
+
+function escHtml(s){
+  if(s===null || s===undefined) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/""/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function flagsHtml(flags){
+  if(!flags || flags==='-') return '';
+  var parts = String(flags).split('+');
+  var out = '';
+  for(var i=0;i<parts.length;i++){
+    var f = parts[i];
+    if(!f) continue;
+    out += '<span class=""flag"">' + escHtml(f) + '</span> ';
+  }
+  return out.trim();
+}
+
+function methodsText(r){
+  return 'POST ' + Number(r.Post||0).toLocaleString() + ' | HEAD ' + Number(r.Head||0).toLocaleString();
+}
+
+function hasAnyFlag(row, want){
+  var flags = String(row.Flags||'').split('+').filter(Boolean);
+  if(flags.length===0) return true;
+  for(var i=0;i<flags.length;i++){
+    if(want[flags[i]]) return true;
+  }
+  return false;
+}
+
+function buildDetailHtml(r){
+  var top = '(none)';
+  if(r.TopUris && r.TopUris.length){
+    var lines = [];
+    for(var i=0;i<r.TopUris.length;i++){
+      var it = r.TopUris[i];
+      var c = String(it.Count).padStart(6,' ');
+      lines.push(c + '  ' + it.Uri);
+    }
+    top = lines.join('\n');
+  }
+
+  var html = '';
+  html += '<div class=""detail""><div class=""grid"">';
+  html += '<div>';
+  html += '<div class=""small"">User-Agent</div><div class=""mono"" style=""margin-bottom:8px"">' + escHtml(r.Ua||'-') + '</div>';
+  html += '<div class=""small"">Status counts</div>';
+  html += '<div class=""mono"" style=""margin-bottom:8px"">2xx ' + Number(r.C2xx||0).toLocaleString() +
+          ' · 3xx ' + Number(r.C3xx||0).toLocaleString() +
+          ' · 4xx ' + Number(r.C4xx||0).toLocaleString() +
+          ' · 5xx ' + Number(r.C5xx||0).toLocaleString() + '</div>';
+  html += '<div class=""small"">Latency</div>';
+  html += '<div class=""mono"">avg ' + Number(r.AvgMs||0).toLocaleString() + ' ms · max ' + Number(r.MaxMs||0).toLocaleString() + ' ms</div>';
+  html += '</div>';
+  html += '<div>';
+  html += '<div class=""small"">Top dynamic URIs</div>';
+  html += '<pre class=""mono"">' + escHtml(top) + '</pre>';
+  html += '</div>';
+  html += '</div></div>';
+  return html;
+}
+
+var table = new Tabulator('#tbl', {
+  data: DATA,
+  layout: 'fitDataStretch',
+  pagination: 'local',
+  paginationSize: 20,
+  initialSort: [{column:'SeverityScore', dir:'desc'}],
+  columns: [
+    {title:'#', field:'Rank', width:60, hozAlign:'right'},
+    {title:'Start (UTC)', field:'StartUtc', width:170, cssClass:'mono'},
+    {title:'IP', field:'Ip', width:170, cssClass:'mono'},
+    {title:'Sev', field:'SeverityScore', width:90, sorter:'number', formatter:function(cell){
+      var s = cell.getValue();
+      var r = cell.getRow().getData();
+      return '<span class=""pill ' + sevClass(s) + '"">' + escHtml(r.SeverityLabel) + '</span>';
+    }},
+    {title:'Req/min', field:'TotalDynamic', sorter:'number', hozAlign:'right', cssClass:'mono'},
+    {title:'Unique', field:'UniqueDynamicUris', sorter:'number', hozAlign:'right', cssClass:'mono'},
+    {title:'4xx%', field:'FourxxPct', sorter:'number', hozAlign:'right', cssClass:'mono'},
+    {title:'Methods', field:'Post', width:170, formatter:function(cell){
+      var r = cell.getRow().getData();
+      return '<span class=""mono"">' + escHtml(methodsText(r)) + '</span>';
+    }},
+    {title:'Avg ms', field:'AvgMs', sorter:'number', hozAlign:'right', cssClass:'mono'},
+    {title:'Flags', field:'Flags', width:230, formatter:function(cell){ return flagsHtml(cell.getValue()); }},
+    {title:'Actions', field:'Ip', width:230, formatter:function(cell){
+      var r = cell.getRow().getData();
+      var btn = '<button class=""btn"" data-copy=""' + escHtml(r.Ip) + '"">Copy IP</button>';
+      var raw = '';
+      if(r.RawLog) raw = ' <a class=""btn"" href=""' + escHtml(r.RawLog) + '"" download>Raw log</a>';
+      return btn + raw;
+    }, cellClick: async function(e, cell){
+      var el = e.target;
+      if(!el) return;
+      var ip = el.getAttribute && el.getAttribute('data-copy');
+      if(!ip) return;
+      try{ await navigator.clipboard.writeText(ip); el.textContent='Copied'; setTimeout(function(){el.textContent='Copy IP';}, 800); }catch{}
+    }}
+  ],
+  rowClick: function(e, row){
+    var el = row.getElement();
+    var next = el.nextElementSibling;
+    if(next && next.classList.contains('detail-row')){
+      next.remove();
+      return;
+    }
+    var d = document.createElement('div');
+    d.className = 'detail-row';
+    d.innerHTML = buildDetailHtml(row.getData());
+    el.parentNode.insertBefore(d, el.nextSibling);
+  }
+});
+
+function getWantFlags(){
+  var want = {};
+  var boxes = document.querySelectorAll('.f');
+  for(var i=0;i<boxes.length;i++){
+    if(boxes[i].checked) want[boxes[i].value] = true;
+  }
+  return want;
+}
+
+function applyFilters(){
+  var term = (document.getElementById('q').value || '').toLowerCase().trim();
+  var want = getWantFlags();
+  table.setFilter(function(data){
+    if(!hasAnyFlag(data, want)) return false;
+    if(!term) return true;
+    // cheap global match
+    return JSON.stringify(data).toLowerCase().indexOf(term) >= 0;
+  });
+}
+
+document.getElementById('q').addEventListener('input', applyFilters);
+var f = document.querySelectorAll('.f');
+for(var i=0;i<f.length;i++){
+  f[i].addEventListener('change', applyFilters);
+}
+applyFilters();
+");
+        sb.AppendLine("</script>");
+
+        sb.AppendLine("</div></body></html>");
+
+        File.WriteAllText(outHtmlPath, sb.ToString(), Encoding.UTF8);
+    }
+
+    private static string HtmlEsc(string s)
+        => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+            .Replace("\"", "&quot;").Replace("'", "&#39;");
+
+    private static string MakeRelativePath(string fromDir, string toPath)
+    {
+        var from = new Uri(AppendSlash(Path.GetFullPath(fromDir)));
+        var to = new Uri(Path.GetFullPath(toPath));
+        var rel = from.MakeRelativeUri(to).ToString();
+        return Uri.UnescapeDataString(rel);
+
+        static string AppendSlash(string p) => p.EndsWith(Path.DirectorySeparatorChar) ? p : p + Path.DirectorySeparatorChar;
+    }
+
+    private static void TryOpenFile(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true
+            });
+        }
+        catch { }
+    }
+
+    // ---------------- Scoring / flags ----------------
 
     private static int Score(BurstAgg a, int rateTh, int enumTh, int errTh)
     {
@@ -538,6 +929,24 @@ public static class IisOption_FindBurstPatterns
 
         return flags.Count == 0 ? "-" : string.Join("+", flags);
     }
+
+    private static string SeverityLabel(int score)
+        => score >= 140 ? "CRIT" : score >= 95 ? "HIGH" : score >= 60 ? "MED" : "LOW";
+
+    private static string SeverityColor(int score)
+        => score >= 140 ? "red" : score >= 95 ? "darkorange" : score >= 60 ? "yellow" : "grey";
+
+    private static string UaSummary(BurstAgg a)
+    {
+        if (a.UaMixed) return "mixed";
+        if (string.IsNullOrWhiteSpace(a.Ua) || a.Ua == "-") return "-";
+
+        var ua = a.Ua!;
+        var first = ua.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return string.IsNullOrWhiteSpace(first) ? ua : first;
+    }
+
+    // ---------------- Parsing / IP / bucketing ----------------
 
     private static bool TryParseInt(ReadOnlySpan<char> s, out int value)
     {
