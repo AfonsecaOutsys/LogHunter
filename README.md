@@ -53,6 +53,12 @@ It’s designed for the “I have 15–20GB of logs and I need answers now” wo
 
 ---
 
+## Playbook
+
+Need a detailed, Confluence-ready operator framework for incident triage (with screenshot placeholders)? See [`PLAYBOOK.md`](PLAYBOOK.md).
+
+---
+
 ## Quick start
 
 ### Requirements
