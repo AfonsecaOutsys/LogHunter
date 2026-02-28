@@ -22,6 +22,8 @@ namespace LogHunter.Utils;
 /// </summary>
 public static class IisW3cReader
 {
+    private const int IoBufferSize = 1 << 20;
+
     public sealed class FieldMap
     {
         public required string FieldsLine { get; init; }
@@ -86,11 +88,11 @@ public static class IisW3cReader
 
             while (i < _line.Length)
             {
-                while (i < _line.Length && _line[i] == ' ') i++;
+                while (i < _line.Length && IsDelimiter(_line[i])) i++;
                 if (i >= _line.Length) break;
 
                 int start = i;
-                while (i < _line.Length && _line[i] != ' ') i++;
+                while (i < _line.Length && !IsDelimiter(_line[i])) i++;
 
                 if (idx == targetIndex)
                     return _line.AsSpan(start, i - start);
@@ -116,7 +118,7 @@ public static class IisW3cReader
     public static async Task<FieldMap?> ReadFieldMapAsync(string filePath, CancellationToken ct = default)
     {
         await using var stream = OpenPossiblyGz(filePath);
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: IoBufferSize);
 
         var header = new List<string>();
         string? fieldsLine = null;
@@ -136,13 +138,7 @@ public static class IisW3cReader
             {
                 fieldsLine = line;
 
-                var fields = line.Substring("#Fields:".Length)
-                    .Trim()
-                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-                idx = new Dictionary<string, int>(fields.Length, StringComparer.OrdinalIgnoreCase);
-                for (int i = 0; i < fields.Length; i++)
-                    idx[fields[i]] = i;
+                idx = ParseFieldIndex(line);
 
                 continue;
             }
@@ -180,7 +176,7 @@ public static class IisW3cReader
         Action<string, TokenReader> onLine)
     {
         await using var stream = OpenPossiblyGz(filePath);
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: IoBufferSize);
 
         // Reused token offsets buffer for this file (start,len pairs).
         // Start with 64 tokens worth of space (128 ints). Grow only if needed.
@@ -215,11 +211,11 @@ public static class IisW3cReader
 
             while (i < line.Length)
             {
-                while (i < line.Length && line[i] == ' ') i++;
+                while (i < line.Length && IsDelimiter(line[i])) i++;
                 if (i >= line.Length) break;
 
                 int start = i;
-                while (i < line.Length && line[i] != ' ') i++;
+                while (i < line.Length && !IsDelimiter(line[i])) i++;
                 int len = i - start;
 
                 int p = tokenCount * 2;
@@ -252,7 +248,7 @@ public static class IisW3cReader
             FileMode.Open,
             FileAccess.Read,
             FileShare.ReadWrite,
-            bufferSize: 1 << 20,
+            bufferSize: IoBufferSize,
             options: FileOptions.SequentialScan);
 
         if (filePath.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
@@ -260,4 +256,30 @@ public static class IisW3cReader
 
         return fs;
     }
+
+    private static Dictionary<string, int> ParseFieldIndex(string fieldsLine)
+    {
+        var payload = fieldsLine.AsSpan("#Fields:".Length);
+        var idx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        int i = 0;
+        int logicalIndex = 0;
+
+        while (i < payload.Length)
+        {
+            while (i < payload.Length && IsDelimiter(payload[i])) i++;
+            if (i >= payload.Length) break;
+
+            int start = i;
+            while (i < payload.Length && !IsDelimiter(payload[i])) i++;
+
+            var token = payload.Slice(start, i - start).ToString();
+            idx[token] = logicalIndex;
+            logicalIndex++;
+        }
+
+        return idx;
+    }
+
+    private static bool IsDelimiter(char c) => c == ' ' || c == '\t';
 }
