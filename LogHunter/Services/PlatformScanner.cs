@@ -17,10 +17,6 @@ namespace LogHunter.Services;
 
 public static class PlatformScanner
 {
-    private static readonly Regex RxMissingFile = new(
-        @"The file\s+.+\s+does not exist\.",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     private static readonly Regex RxClientIp = new(
         @"ClientIp:\s*(?<ip>[0-9a-fA-F\.:]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -28,9 +24,6 @@ public static class PlatformScanner
     private static readonly Regex RxXff = new(
         @"X-Forwarded-For:\s*(?<ip>[0-9a-fA-F\.:, ]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private const string DangerousPathNeedle =
-        "A potentially dangerous Request.Path value was detected from the client";
 
     public static Task<PlatformSuspiciousScanResult> ScanSuspiciousRequestsAsync(
         string platformLogsDir,
@@ -126,7 +119,7 @@ public static class PlatformScanner
                 continue;
 
             anyMatch = true;
-            res.AddHit(type.Value, effectiveIp!, clientIp, xffIp);
+            res.AddHit(type, effectiveIp!, clientIp, xffIp);
         }
 
         return anyMatch;
@@ -167,7 +160,7 @@ public static class PlatformScanner
                     continue;
 
                 anyMatch = true;
-                res.AddHit(type.Value, effectiveIp!, clientIp, xffIp);
+                res.AddHit(type, effectiveIp!, clientIp, xffIp);
             }
 
         } while (reader.NextResult());
@@ -175,13 +168,11 @@ public static class PlatformScanner
         return anyMatch;
     }
 
-    private static PlatformSuspiciousType? MatchSuspiciousType(string msg)
+    private static string? MatchSuspiciousType(string msg)
     {
-        if (msg.IndexOf(DangerousPathNeedle, StringComparison.OrdinalIgnoreCase) >= 0)
-            return PlatformSuspiciousType.DangerousRequestPath;
-
-        if (RxMissingFile.IsMatch(msg))
-            return PlatformSuspiciousType.MissingFileDoesNotExist;
+        foreach (var def in PlatformSuspiciousErrorDefinitions.All)
+            if (def.IsMatch(msg))
+                return def.Name;
 
         return null;
     }
@@ -248,12 +239,6 @@ public static class PlatformScanner
     }
 }
 
-public enum PlatformSuspiciousType
-{
-    DangerousRequestPath,
-    MissingFileDoesNotExist
-}
-
 public sealed class PlatformSuspiciousScanResult
 {
     public int FilesScanned { get; set; }
@@ -274,7 +259,7 @@ public sealed class PlatformSuspiciousScanResult
     public Dictionary<string, List<(string Ip, int Hits)>> TopEffectiveIpsByErrorType { get; } =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public void AddHit(PlatformSuspiciousType type, string effectiveIp, string? clientIp, string? xffIp)
+    public void AddHit(string typeName, string effectiveIp, string? clientIp, string? xffIp)
     {
         MatchedRows++;
 
@@ -282,13 +267,6 @@ public sealed class PlatformSuspiciousScanResult
             RowsWithXff++;
         else
             RowsWithoutXff++;
-
-        var typeName = type switch
-        {
-            PlatformSuspiciousType.DangerousRequestPath => "Dangerous Request.Path",
-            PlatformSuspiciousType.MissingFileDoesNotExist => "The file * does not exist",
-            _ => type.ToString()
-        };
 
         if (!EffectiveIpCountsByErrorType.TryGetValue(typeName, out var map))
         {
