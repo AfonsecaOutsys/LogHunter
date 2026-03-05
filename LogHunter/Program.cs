@@ -102,6 +102,7 @@ internal static class Program
                 : Path.GetFullPath(rootOverride);
 
             AppFolders.Ensure();
+            EmbeddedAssets.EnsureTabulatorAssets(root);
 
             //start part
             var asm = Assembly.GetExecutingAssembly();
