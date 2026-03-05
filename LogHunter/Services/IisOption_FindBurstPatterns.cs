@@ -159,6 +159,9 @@ public static class IisOption_FindBurstPatterns
             return;
         }
 
+        // Ensure tabulator assets under the selected workspace root.
+        EmbeddedAssets.EnsureTabulatorAssets(root);
+
         // Tabulator assets (you placed them here)
         var assetsDir = Path.Combine(root, "ALB", "configs", "_assets");
         var tabJs = Path.Combine(assetsDir, "tabulator.min.js");

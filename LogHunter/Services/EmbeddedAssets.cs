@@ -7,12 +7,16 @@ namespace LogHunter.Services;
 
 public static class EmbeddedAssets
 {
-    public static void EnsureTabulatorAssets(bool overwrite = false)
+    public static void EnsureTabulatorAssets(string root, bool overwrite = false)
     {
-        AppFolders.Ensure();
+        if (string.IsNullOrWhiteSpace(root))
+            throw new ArgumentException("Root path is required.", nameof(root));
 
-        var jsOut = Path.Combine(AppFolders.Assets, "tabulator.min.js");
-        var cssOut = Path.Combine(AppFolders.Assets, "tabulator.min.css");
+        var assetsDir = Path.Combine(root, "ALB", "configs", "_assets");
+        Directory.CreateDirectory(assetsDir);
+
+        var jsOut = Path.Combine(assetsDir, "tabulator.min.js");
+        var cssOut = Path.Combine(assetsDir, "tabulator.min.css");
 
         if (overwrite || !File.Exists(jsOut))
             ExtractBySuffix(".tabulator.min.js", jsOut);
