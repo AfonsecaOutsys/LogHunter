@@ -350,7 +350,7 @@ public static class AlbOptions
         const int topIpPerUriCount = 10;
 
         InfoPanel("Scan plan",
-            ("Mode", "Top IPs per URI for endpoint fragment (no query)"),
+            ("Mode", "Top full paths for endpoint fragment (no query)"),
             ("Endpoint fragment", endpoint),
             ("Passes", "2"),
             ("Top URIs", topUriCount.ToString(CultureInfo.InvariantCulture)),
@@ -358,7 +358,6 @@ public static class AlbOptions
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
-        // Pass 1: find top full URIs matching the fragment.
         var uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
@@ -379,13 +378,15 @@ public static class AlbOptions
             return;
         }
 
-        var topUris = uriCounts
+        var top = uriCounts
             .OrderByDescending(kvp => kvp.Value)
-            .Take(topUriCount)
+            .Take(50)
             .Select((kvp, idx) => new { Rank = idx + 1, URI = kvp.Key, Hits = kvp.Value })
             .ToList();
 
-        var selectedUris = new HashSet<string>(topUris.Select(x => x.URI), StringComparer.Ordinal);
+        var table = TopTable("Rank", "Hits", "URI (no query)");
+        foreach (var row in top)
+            table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.URI));
 
         // Pass 2: only for top URIs, count IPs per URI.
         var uriIpPairCounts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -408,65 +409,24 @@ public static class AlbOptions
 
         AnsiConsole.Write(new Panel(topUrisTable)
         {
-            Header = new PanelHeader($"Top {topUris.Count} full URIs for fragment: {Markup.Escape(endpoint)}"),
+            Header = new PanelHeader($"Top full paths for: {Markup.Escape(endpoint)} (max 50)"),
             Border = BoxBorder.Rounded
         });
         AnsiConsole.WriteLine();
-
-        var rowsForExport = new List<(int UriRank, string Uri, int UriHits, int IpRank, string Ip, int IpHits)>();
-
-        foreach (var uriRow in topUris)
-        {
-            var prefix = uriRow.URI + "	";
-            var topIpsForUri = uriIpPairCounts
-                .Where(kvp => kvp.Key.StartsWith(prefix, StringComparison.Ordinal))
-                .Select(kvp =>
-                {
-                    var ip = kvp.Key[(prefix.Length)..];
-                    return new { IP = ip, Hits = kvp.Value };
-                })
-                .OrderByDescending(x => x.Hits)
-                .Take(topIpPerUriCount)
-                .ToList();
-
-            var perUriTable = TopTable("IP Rank", "Hits", "IP");
-            if (topIpsForUri.Count == 0)
-            {
-                perUriTable.AddRow("-", "0", "(none)");
-            }
-            else
-            {
-                for (int i = 0; i < topIpsForUri.Count; i++)
-                {
-                    var rank = i + 1;
-                    var r = topIpsForUri[i];
-                    perUriTable.AddRow(rank.ToString(CultureInfo.InvariantCulture), r.Hits.ToString("N0", CultureInfo.InvariantCulture), Markup.Escape(r.IP));
-                    rowsForExport.Add((uriRow.Rank, uriRow.URI, uriRow.Hits, rank, r.IP, r.Hits));
-                }
-            }
-
-            AnsiConsole.Write(new Panel(perUriTable)
-            {
-                Header = new PanelHeader($"URI #{uriRow.Rank} ({uriRow.Hits:N0} hits): {Markup.Escape(uriRow.URI)}"),
-                Border = BoxBorder.Rounded
-            });
-            AnsiConsole.WriteLine();
-        }
 
         var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var outFile = Path.Combine(outputFolder, $"ALB_TopIPs_PerURI_ForFragment_{stamp}.csv");
+            var outFile = Path.Combine(outputFolder, $"ALB_Top50_FullPaths_ForFragment_{stamp}.csv");
 
             using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
-            swCsv.WriteLine("UriRank,URI,UriHits,IpRank,IP,IpHits");
-
-            foreach (var row in rowsForExport)
+            swCsv.WriteLine("Rank,Hits,URI");
+            foreach (var row in top)
             {
-                var uri = row.Uri.Replace("\"", "\"\"");
-                swCsv.WriteLine($"{row.UriRank},\"{uri}\",{row.UriHits},{row.IpRank},{row.Ip},{row.IpHits}");
+                var uri = row.URI.Replace("\"", "\"\"");
+                swCsv.WriteLine($"{row.Rank},{row.Hits},\"{uri}\"");
             }
 
             ConsoleEx.Success($"Exported: {outFile}");

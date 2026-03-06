@@ -76,7 +76,7 @@ The ALB module focuses on edge traffic triage: who is hitting your edge, what th
 
 Commands:
 1. **Download logs**
-2. **Top IPs per URI for endpoint/path fragment (no query string)**
+2. **Top full paths for endpoint/path fragment (no query string)**
 3. **Top 50 IPs overall**
 4. **Top 50 IPs by URI (no query string)**
 5. **Requests ordered by AVG duration (filtered by target)**
