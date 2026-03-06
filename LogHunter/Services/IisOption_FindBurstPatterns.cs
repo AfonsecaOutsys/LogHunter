@@ -374,7 +374,6 @@ public static class IisOption_FindBurstPatterns
             .AddColumn("[bold]Start (UTC)[/]")
             .AddColumn("[bold]IP[/]")
             .AddColumn(new TableColumn("[bold]Req/min[/]").RightAligned())
-            .AddColumn(new TableColumn("[bold]4xx count[/]").RightAligned())
             .AddColumn(new TableColumn("[bold]4xx%[/]").RightAligned())
             .AddColumn("[bold]Flags[/]")
             .AddColumn(new TableColumn("[bold]Avg ms[/]").RightAligned())
@@ -390,7 +389,6 @@ public static class IisOption_FindBurstPatterns
                 a.StartUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
                 Markup.Escape(a.Ip),
                 a.TotalDynamic.ToString("n0", CultureInfo.InvariantCulture),
-                a.C4xx.ToString("n0", CultureInfo.InvariantCulture),
                 (a.FourxxRatio * 100).ToString("0.0", CultureInfo.InvariantCulture),
                 $"[dim]{Markup.Escape(flags)}[/]",
                 a.AvgTimeMs.ToString("n0", CultureInfo.InvariantCulture),
@@ -793,7 +791,6 @@ var table = new Tabulator('#tbl', {
     {title:'Start (UTC)', field:'StartUtc', width:170, cssClass:'mono'},
     {title:'IP', field:'Ip', width:170, cssClass:'mono'},
     {title:'Req/min', field:'TotalDynamic', sorter:'number', hozAlign:'right', cssClass:'mono'},
-    {title:'4xx count', field:'C4xx', sorter:'number', hozAlign:'right', cssClass:'mono'},
     {title:'4xx%', field:'FourxxPct', sorter:'number', hozAlign:'right', cssClass:'mono'},
     {title:'Methods', field:'Post', width:170, formatter:function(cell){
       var r = cell.getRow().getData();
