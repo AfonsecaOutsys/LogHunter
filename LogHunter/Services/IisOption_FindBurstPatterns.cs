@@ -375,7 +375,6 @@ public static class IisOption_FindBurstPatterns
             .AddColumn("[bold]IP[/]")
             .AddColumn(new TableColumn("[bold]Sev[/]").Centered())
             .AddColumn(new TableColumn("[bold]Req/min[/]").RightAligned())
-            .AddColumn(new TableColumn("[bold]Unique[/]").RightAligned())
             .AddColumn(new TableColumn("[bold]4xx%[/]").RightAligned())
             .AddColumn("[bold]Flags[/]")
             .AddColumn(new TableColumn("[bold]Avg ms[/]").RightAligned())
@@ -393,7 +392,6 @@ public static class IisOption_FindBurstPatterns
                 Markup.Escape(a.Ip),
                 $"[{SeverityColor(score)}]{SeverityLabel(score)}[/]",
                 a.TotalDynamic.ToString("n0", CultureInfo.InvariantCulture),
-                a.UniqueDynamicUris.ToString("n0", CultureInfo.InvariantCulture),
                 (a.FourxxRatio * 100).ToString("0.0", CultureInfo.InvariantCulture),
                 $"[dim]{Markup.Escape(flags)}[/]",
                 a.AvgTimeMs.ToString("n0", CultureInfo.InvariantCulture),
@@ -801,7 +799,6 @@ var table = new Tabulator('#tbl', {
       return '<span class=""pill ' + sevClass(s) + '"">' + escHtml(r.SeverityLabel) + '</span>';
     }},
     {title:'Req/min', field:'TotalDynamic', sorter:'number', hozAlign:'right', cssClass:'mono'},
-    {title:'Unique', field:'UniqueDynamicUris', sorter:'number', hozAlign:'right', cssClass:'mono'},
     {title:'4xx%', field:'FourxxPct', sorter:'number', hozAlign:'right', cssClass:'mono'},
     {title:'Methods', field:'Post', width:170, formatter:function(cell){
       var r = cell.getRow().getData();
