@@ -314,7 +314,7 @@ public static class AlbOptions
 
     // ---------- OPTION 2 ----------
 
-    public static async Task TopIpsForEndpointAsync(string root, List<SavedSelection> savedSelections)
+    public static async Task TopIpsForEndpointAsync(string root, List<SavedSelection> _savedSelections)
     {
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
@@ -346,83 +346,62 @@ public static class AlbOptions
         }
 
         InfoPanel("Scan plan",
-            ("Mode", "Top IPs for endpoint"),
+            ("Mode", "Top full paths for endpoint fragment (no query)"),
             ("Endpoint fragment", endpoint),
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
-        var ipCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
             title: "Scanning ALB logs",
             files: files,
             scanFileAsync: (file, reportDelta) =>
-                AlbScanner.ScanFileForEndpointIpCountsAsync(
+                AlbScanner.ScanFileForEndpointUriCountsAsync(
                     filePath: file,
                     endpointFragment: endpoint,
-                    ipCounts: ipCounts,
+                    uriCounts: uriCounts,
                     reportBytesDelta: reportDelta)
         );
 
-        if (ipCounts.Count == 0)
+        if (uriCounts.Count == 0)
         {
             ConsoleEx.Warn($"No hits found for: {endpoint}");
             ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var top = ipCounts
+        var top = uriCounts
             .OrderByDescending(kvp => kvp.Value)
             .Take(50)
-            .Select((kvp, idx) => new { Rank = idx + 1, IP = kvp.Key, Hits = kvp.Value })
+            .Select((kvp, idx) => new { Rank = idx + 1, URI = kvp.Key, Hits = kvp.Value })
             .ToList();
 
-        var table = TopTable("Rank", "Hits", "IP");
+        var table = TopTable("Rank", "Hits", "URI (no query)");
         foreach (var row in top)
-            table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.IP));
+            table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.URI));
 
         AnsiConsole.Write(new Panel(table)
         {
-            Header = new PanelHeader($"Top IPs for: {Markup.Escape(endpoint)} (max 50)"),
+            Header = new PanelHeader($"Top full paths for: {Markup.Escape(endpoint)} (max 50)"),
             Border = BoxBorder.Rounded
         });
         AnsiConsole.WriteLine();
-
-        var maxRank = top.Max(x => x.Rank);
-        var n = AnsiConsole.Prompt(
-            new TextPrompt<int>($"Save ranks 1 to N (1-{maxRank}):")
-                .Validate(v => v >= 1 && v <= maxRank
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error($"Enter a number between 1 and {maxRank}.")));
-
-        var selected = top.Where(x => x.Rank <= n).ToList();
-
-        var utcNow = DateTime.UtcNow;
-        foreach (var row in selected)
-        {
-            savedSelections.Add(new SavedSelection(
-                SavedAtUtc: utcNow,
-                Source: "ALB",
-                Endpoint: endpoint,
-                Rank: row.Rank,
-                IP: row.IP,
-                Hits: row.Hits
-            ));
-        }
-
-        ConsoleEx.Success($"Saved {n} item(s) to session selections.");
 
         var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var outFile = Path.Combine(outputFolder, $"ALB_SelectedTop{n}_{stamp}.csv");
+            var outFile = Path.Combine(outputFolder, $"ALB_Top50_FullPaths_ForFragment_{stamp}.csv");
 
             using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
-            swCsv.WriteLine("Rank,IP,Hits");
-            foreach (var row in selected)
-                swCsv.WriteLine($"{row.Rank},{row.IP},{row.Hits}");
+            swCsv.WriteLine("Rank,Hits,URI");
+            foreach (var row in top)
+            {
+                var uri = row.URI.Replace("\"", "\"\"");
+                swCsv.WriteLine($"{row.Rank},{row.Hits},\"{uri}\"");
+            }
 
             ConsoleEx.Success($"Exported: {outFile}");
         }

@@ -277,6 +277,50 @@ public static class AlbScanner
             reportBytesDelta(remaining);
     }
 
+    public static async Task ScanFileForEndpointUriCountsAsync(
+        string filePath,
+        string endpointFragment,
+        Dictionary<string, int> uriCounts,
+        Action<long> reportBytesDelta)
+    {
+        using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1 << 20, FileOptions.SequentialScan);
+        using var sr = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
+
+        long lastReportedPos = 0;
+        const long chunk = 64L * 1024 * 1024; // 64MB
+
+        while (true)
+        {
+            var line = await sr.ReadLineAsync().ConfigureAwait(false);
+            if (line is null) break;
+            if (line.Length == 0) continue;
+
+            // Cheap filter first (saves CPU)
+            if (line.IndexOf(endpointFragment, StringComparison.OrdinalIgnoreCase) < 0)
+                continue;
+
+            var uri = ExtractAlbUriNoQuery(line);
+            if (string.IsNullOrEmpty(uri))
+                continue;
+
+            if (uriCounts.TryGetValue(uri, out var cur))
+                uriCounts[uri] = cur + 1;
+            else
+                uriCounts[uri] = 1;
+
+            var pos = fs.Position;
+            if (pos - lastReportedPos >= chunk)
+            {
+                reportBytesDelta(pos - lastReportedPos);
+                lastReportedPos = pos;
+            }
+        }
+
+        var remaining = fs.Length - lastReportedPos;
+        if (remaining > 0)
+            reportBytesDelta(remaining);
+    }
+
     public static async Task ScanFileForIpUriCountsAsync(
         string filePath,
         Dictionary<string, int> pairCounts,
