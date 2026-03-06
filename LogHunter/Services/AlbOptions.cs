@@ -611,32 +611,17 @@ public static class AlbOptions
 
     // ---------- OPTION 5 ----------
 
-    public static async Task AvgDurationByTargetNoQueryAsync(string root)
+    public static async Task Top50RequestsByAvgDurationNoQueryAsync(string root)
     {
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Slow requests by AVG duration (filtered by target)",
+        ConsoleEx.Header("ALB: Top 50 requests by AVG duration",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
         {
             ConsoleEx.Error($"ALB folder not found: {albFolder}");
-            ConsoleEx.Pause("Press Enter to return...");
-            return;
-        }
-
-        // ✅ Esc-cancellable input
-        var target = ConsoleEx.ReadLineWithEsc("Target filter (IP or fragment, e.g., 10.0.0.12) [Esc to go back]:", trim: true);
-        if (target is null)
-        {
-            ConsoleEx.Info("Cancelled.");
-            return; // go back to previous menu immediately
-        }
-
-        if (string.IsNullOrWhiteSpace(target))
-        {
-            ConsoleEx.Warn("No target provided.");
             ConsoleEx.Pause("Press Enter to return...");
             return;
         }
@@ -650,8 +635,7 @@ public static class AlbOptions
         }
 
         InfoPanel("Scan plan",
-            ("Mode", "AVG duration by target (URI without query)"),
-            ("Target filter", target),
+            ("Mode", "Top 50 requests by AVG duration (URI without query)"),
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
@@ -699,10 +683,6 @@ public static class AlbOptions
                             var line = await sr.ReadLineAsync().ConfigureAwait(false);
                             if (line is null) break;
                             if (line.Length == 0) continue;
-
-                            var targetHost = AlbScanner.ExtractAlbTargetHost(line);
-                            if (targetHost is null) continue;
-                            if (targetHost.IndexOf(target, StringComparison.OrdinalIgnoreCase) < 0) continue;
 
                             var dur = AlbScanner.ExtractAlbTargetProcessingTimeSeconds(line);
                             if (dur is null || dur.Value < 0) continue;
@@ -754,7 +734,7 @@ public static class AlbOptions
 
         if (stats.Count == 0)
         {
-            ConsoleEx.Warn($"No matches found for target filter: {target}");
+            ConsoleEx.Warn("No request duration data found in parsed logs.");
             ConsoleEx.Pause("Press Enter to return...");
             return;
         }
@@ -789,7 +769,7 @@ public static class AlbOptions
 
         AnsiConsole.Write(new Panel(table)
         {
-            Header = new PanelHeader($"Top 50 URIs (no query) by AVG duration (target filter: {Markup.Escape(target)})"),
+            Header = new PanelHeader("Top 50 requests (URI no query) by AVG duration"),
             Border = BoxBorder.Rounded
         });
         AnsiConsole.WriteLine();
@@ -799,7 +779,7 @@ public static class AlbOptions
         {
             Directory.CreateDirectory(outputFolder);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var outFile = Path.Combine(outputFolder, $"ALB_AvgDuration_ByTarget_{stamp}.csv");
+            var outFile = Path.Combine(outputFolder, $"ALB_Top50_Requests_AvgDuration_{stamp}.csv");
 
             using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
             swCsv.WriteLine("AvgSeconds,Count,MaxSeconds,URI");

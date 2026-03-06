@@ -32,8 +32,8 @@ public sealed class AlbMenu : IMenu
                 "Show top IPs per URI with query strings removed.\nHelps group requests by route instead of parameters."),
 
             new ConsoleEx.MenuItem(
-                "Requests by AVG duration (filtered by target)",
-                "Find slow requests (query removed) ordered by average target duration,\nfiltered to a specific target host/service."),
+                "Top 50 requests by AVG duration",
+                "Find the slowest request paths (query removed), ordered by average duration."),
 
             new ConsoleEx.MenuItem(
                 "Requests per IP per 5 minutes (chart)",
@@ -77,7 +77,7 @@ public sealed class AlbMenu : IMenu
                 return this;
 
             case 4:
-                await AlbOptions.AvgDurationByTargetNoQueryAsync(_session.Root).ConfigureAwait(false);
+                await AlbOptions.Top50RequestsByAvgDurationNoQueryAsync(_session.Root).ConfigureAwait(false);
                 return this;
 
             case 5:
