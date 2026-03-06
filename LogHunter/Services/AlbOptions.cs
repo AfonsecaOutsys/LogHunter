@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -319,7 +320,7 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Top IPs for endpoint/path fragment",
+        ConsoleEx.Header("ALB: Top IPs per URI for endpoint/path fragment",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
@@ -329,7 +330,7 @@ public static class AlbOptions
             return;
         }
 
-        var endpoint = ConsoleEx.Prompt("Endpoint/path fragment (e.g., ActionLogin_Wrapper):");
+        var endpoint = ConsoleEx.Prompt("Endpoint/path fragment (e.g., login or /login/):");
         if (string.IsNullOrWhiteSpace(endpoint))
         {
             ConsoleEx.Warn("No endpoint provided.");
@@ -345,16 +346,22 @@ public static class AlbOptions
             return;
         }
 
+        const int topUriCount = 20;
+        const int topIpPerUriCount = 10;
+
         InfoPanel("Scan plan",
             ("Mode", "Top full paths for endpoint fragment (no query)"),
             ("Endpoint fragment", endpoint),
+            ("Passes", "2"),
+            ("Top URIs", topUriCount.ToString(CultureInfo.InvariantCulture)),
+            ("Top IPs per URI", topIpPerUriCount.ToString(CultureInfo.InvariantCulture)),
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
         var uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
-            title: "Scanning ALB logs",
+            title: "Scanning ALB logs (pass 1/2: matching full URIs)",
             files: files,
             scanFileAsync: (file, reportDelta) =>
                 AlbScanner.ScanFileForEndpointUriCountsAsync(
@@ -381,7 +388,26 @@ public static class AlbOptions
         foreach (var row in top)
             table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.URI));
 
-        AnsiConsole.Write(new Panel(table)
+        // Pass 2: only for top URIs, count IPs per URI.
+        var uriIpPairCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        await RunScanWithProgressAsync(
+            title: "Scanning ALB logs (pass 2/2: top IPs per URI)",
+            files: files,
+            scanFileAsync: (file, reportDelta) =>
+                AlbScanner.ScanFileForEndpointUriIpCountsAsync(
+                    filePath: file,
+                    endpointFragment: endpoint,
+                    selectedUris: selectedUris,
+                    pairCounts: uriIpPairCounts,
+                    reportBytesDelta: reportDelta)
+        );
+
+        var topUrisTable = TopTable("URI Rank", "Hits", "URI (no query)");
+        foreach (var row in topUris)
+            topUrisTable.AddRow(row.Rank.ToString(CultureInfo.InvariantCulture), row.Hits.ToString("N0", CultureInfo.InvariantCulture), Markup.Escape(row.URI));
+
+        AnsiConsole.Write(new Panel(topUrisTable)
         {
             Header = new PanelHeader($"Top full paths for: {Markup.Escape(endpoint)} (max 50)"),
             Border = BoxBorder.Rounded
