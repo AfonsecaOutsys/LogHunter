@@ -373,7 +373,6 @@ public static class IisOption_FindBurstPatterns
             .AddColumn(new TableColumn("[bold]#[/]").RightAligned())
             .AddColumn("[bold]Start (UTC)[/]")
             .AddColumn("[bold]IP[/]")
-            .AddColumn(new TableColumn("[bold]Sev[/]").Centered())
             .AddColumn(new TableColumn("[bold]Req/min[/]").RightAligned())
             .AddColumn(new TableColumn("[bold]4xx%[/]").RightAligned())
             .AddColumn("[bold]Flags[/]")
@@ -383,14 +382,12 @@ public static class IisOption_FindBurstPatterns
         for (int i = 0; i < burstsForSpectre.Count; i++)
         {
             var a = burstsForSpectre[i].Agg;
-            var score = burstsForSpectre[i].SeverityScore;
             var flags = BurstFlags(a, rateThreshold, enumThreshold, errorThreshold);
 
             table.AddRow(
                 (i + 1).ToString(CultureInfo.InvariantCulture),
                 a.StartUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
                 Markup.Escape(a.Ip),
-                $"[{SeverityColor(score)}]{SeverityLabel(score)}[/]",
                 a.TotalDynamic.ToString("n0", CultureInfo.InvariantCulture),
                 (a.FourxxRatio * 100).ToString("0.0", CultureInfo.InvariantCulture),
                 $"[dim]{Markup.Escape(flags)}[/]",
@@ -433,7 +430,7 @@ public static class IisOption_FindBurstPatterns
 
             pick.AddChoice(new BurstPick(
                 id,
-                $"{i + 1}. {a.StartUtc:yyyy-MM-dd HH:mm:ss}Z | {a.Ip} | {SeverityLabel(burstsForSpectre[i].SeverityScore)} | dyn:{a.TotalDynamic} unique:{a.UniqueDynamicUris} 4xx:{a.C4xx} | {flags}"
+                $"{i + 1}. {a.StartUtc:yyyy-MM-dd HH:mm:ss}Z | {a.Ip} | dyn:{a.TotalDynamic} unique:{a.UniqueDynamicUris} 4xx:{a.C4xx} | {flags}"
             ));
         }
 
@@ -793,11 +790,6 @@ var table = new Tabulator('#tbl', {
     {title:'#', field:'Rank', width:60, hozAlign:'right'},
     {title:'Start (UTC)', field:'StartUtc', width:170, cssClass:'mono'},
     {title:'IP', field:'Ip', width:170, cssClass:'mono'},
-    {title:'Sev', field:'SeverityScore', width:90, sorter:'number', formatter:function(cell){
-      var s = cell.getValue();
-      var r = cell.getRow().getData();
-      return '<span class=""pill ' + sevClass(s) + '"">' + escHtml(r.SeverityLabel) + '</span>';
-    }},
     {title:'Req/min', field:'TotalDynamic', sorter:'number', hozAlign:'right', cssClass:'mono'},
     {title:'4xx%', field:'FourxxPct', sorter:'number', hozAlign:'right', cssClass:'mono'},
     {title:'Methods', field:'Post', width:170, formatter:function(cell){
