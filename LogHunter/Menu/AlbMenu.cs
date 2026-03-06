@@ -20,8 +20,8 @@ public sealed class AlbMenu : IMenu
                 "Download ALB logs into the workspace (ALB folder).\nUses AWS CLI and your current credentials/session."),
 
             new ConsoleEx.MenuItem(
-                "Top IPs for endpoint/path fragment",
-                "Count client IPs hitting a given endpoint or path fragment.\nUseful to identify noisy sources for a specific route."),
+                "Top IPs per URI for endpoint/path fragment",
+                "Match a fragment, find top full URIs (query removed), then show top IPs per URI.\nUseful when many routes share a token like login."),
 
             new ConsoleEx.MenuItem(
                 "Top 50 IPs overall",
