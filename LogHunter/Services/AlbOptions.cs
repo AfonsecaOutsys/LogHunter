@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using ClosedXML.Excel;
 using LogHunter.Models;
 using LogHunter.Utils;
 using Spectre.Console;
@@ -30,6 +31,10 @@ public static class AlbOptions
         public double SumSeconds;
         public double MaxSeconds;
     }
+
+    private sealed record TopIpRow(int Rank, string IP, int Hits);
+    private sealed record TopUriRow(string URI, int Hits);
+    private sealed record TopUrisByIpGroup(TopIpRow Ip, List<TopUriRow> TopUris);
 
     private static DateTime FloorTo5MinUtc(DateTime dtUtc)
     {
@@ -382,7 +387,7 @@ public static class AlbOptions
             .OrderByDescending(kvp => kvp.Value)
             .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
             .Take(topIpCount)
-            .Select((kvp, idx) => new { Rank = idx + 1, IP = kvp.Key, Hits = kvp.Value })
+            .Select((kvp, idx) => new TopIpRow(idx + 1, kvp.Key, kvp.Value))
             .ToList();
 
         var selectedIps = new HashSet<string>(topIps.Select(x => x.IP), StringComparer.Ordinal);
@@ -424,11 +429,11 @@ public static class AlbOptions
                         .OrderByDescending(x => x.Value)
                         .ThenBy(x => x.Key, StringComparer.Ordinal)
                         .Take(topUriPerIpCount)
-                        .Select(x => (URI: x.Key, Hits: x.Value))
+                        .Select(x => new TopUriRow(x.Key, x.Value))
                         .ToList()
-                    : new List<(string URI, int Hits)>();
+                    : new List<TopUriRow>();
 
-                return new { Ip = ipRow, TopUris = topUris };
+                return new TopUrisByIpGroup(ipRow, topUris);
             })
             .ToList();
 
@@ -465,33 +470,111 @@ public static class AlbOptions
         {
             Directory.CreateDirectory(outputFolder);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var outFile = Path.Combine(outputFolder, $"ALB_TopIps_TopUris_ForFragment_{stamp}.csv");
-
-            using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
-            swCsv.WriteLine("IpRank,IpHits,IP,UriRank,UriHits,URI");
-
-            foreach (var group in topUrisByIp)
-            {
-                if (group.TopUris.Count == 0)
-                {
-                    var ipOnly = group.Ip.IP.Replace("\"", "\"\"");
-                    swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ipOnly}\",0,0,\"\"");
-                    continue;
-                }
-
-                for (int i = 0; i < group.TopUris.Count; i++)
-                {
-                    var row = group.TopUris[i];
-                    var ip = group.Ip.IP.Replace("\"", "\"\"");
-                    var uri = row.URI.Replace("\"", "\"\"");
-                    swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ip}\",{i + 1},{row.Hits},\"{uri}\"");
-                }
-            }
+            var outFile = Path.Combine(outputFolder, $"ALB_TopIps_TopUris_ForFragment_{stamp}.xlsx");
+            ExportTopIpsTopUrisGroupedXlsx(outFile, endpoint, topIps, topUrisByIp);
 
             ConsoleEx.Success($"Exported: {outFile}");
         }
 
         ConsoleEx.Pause("Press Enter to return...");
+    }
+
+    private static void ExportTopIpsTopUrisGroupedXlsx(
+        string outFile,
+        string endpoint,
+        List<TopIpRow> topIps,
+        List<TopUrisByIpGroup> topUrisByIp)
+    {
+        using var wb = new XLWorkbook();
+        var ws = wb.Worksheets.Add("Top IPs + URIs");
+
+        int row = 1;
+
+        ws.Cell(row, 1).Value = "ALB - Top IPs + Top Full Paths for Endpoint Fragment";
+        ws.Range(row, 1, row, 6).Merge();
+        ws.Cell(row, 1).Style.Font.Bold = true;
+        ws.Cell(row, 1).Style.Font.FontSize = 14;
+        row += 1;
+
+        ws.Cell(row, 1).Value = "Endpoint fragment";
+        ws.Cell(row, 2).Value = endpoint;
+        row += 1;
+
+        ws.Cell(row, 1).Value = "Generated";
+        ws.Cell(row, 2).Value = DateTime.Now;
+        ws.Cell(row, 2).Style.DateFormat.Format = "yyyy-mm-dd hh:mm:ss";
+        row += 2;
+
+        ws.Cell(row, 1).Value = "Top IP Summary";
+        ws.Range(row, 1, row, 3).Merge();
+        ws.Cell(row, 1).Style.Font.Bold = true;
+        ws.Cell(row, 1).Style.Fill.BackgroundColor = XLColor.LightGray;
+        row += 1;
+
+        ws.Cell(row, 1).Value = "IP Rank";
+        ws.Cell(row, 2).Value = "Hits";
+        ws.Cell(row, 3).Value = "IP";
+        ws.Range(row, 1, row, 3).Style.Font.Bold = true;
+        ws.Range(row, 1, row, 3).Style.Fill.BackgroundColor = XLColor.AliceBlue;
+        row += 1;
+
+        foreach (var ip in topIps)
+        {
+            ws.Cell(row, 1).Value = ip.Rank;
+            ws.Cell(row, 2).Value = ip.Hits;
+            ws.Cell(row, 3).Value = ip.IP;
+            row++;
+        }
+
+        ws.Range(row - topIps.Count, 1, row - 1, 3).Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        ws.Range(row - topIps.Count, 1, row - 1, 3).Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+        row += 2;
+
+        foreach (var group in topUrisByIp)
+        {
+            ws.Cell(row, 1).Value = $"IP #{group.Ip.Rank}: {group.Ip.IP} ({group.Ip.Hits:N0} hits)";
+            ws.Range(row, 1, row, 6).Merge();
+            ws.Cell(row, 1).Style.Font.Bold = true;
+            ws.Cell(row, 1).Style.Fill.BackgroundColor = XLColor.LightGray;
+            row += 1;
+
+            ws.Cell(row, 1).Value = "URI Rank";
+            ws.Cell(row, 2).Value = "Hits";
+            ws.Cell(row, 3).Value = "URI (no query)";
+            ws.Range(row, 1, row, 3).Style.Font.Bold = true;
+            ws.Range(row, 1, row, 3).Style.Fill.BackgroundColor = XLColor.AliceBlue;
+            row += 1;
+
+            int start = row;
+            if (group.TopUris.Count == 0)
+            {
+                ws.Cell(row, 1).Value = "-";
+                ws.Cell(row, 2).Value = 0;
+                ws.Cell(row, 3).Value = "(no URI matches)";
+                row++;
+            }
+            else
+            {
+                for (int i = 0; i < group.TopUris.Count; i++)
+                {
+                    var uri = group.TopUris[i];
+                    ws.Cell(row, 1).Value = i + 1;
+                    ws.Cell(row, 2).Value = uri.Hits;
+                    ws.Cell(row, 3).Value = uri.URI;
+                    row++;
+                }
+            }
+
+            ws.Range(start, 1, row - 1, 3).Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            ws.Range(start, 1, row - 1, 3).Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+            row += 1;
+        }
+
+        ws.SheetView.FreezeRows(6);
+        ws.Columns(1, 3).AdjustToContents(10, 110);
+
+        wb.SaveAs(outFile);
     }
 
     // ---------- OPTION 3 ----------
