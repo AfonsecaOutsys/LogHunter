@@ -378,13 +378,14 @@ public static class AlbOptions
             return;
         }
 
-        var topUris = uriCounts
+        var topIps = endpointIpCounts
             .OrderByDescending(kvp => kvp.Value)
-            .Take(topUriCount)
-            .Select((kvp, idx) => new { Rank = idx + 1, URI = kvp.Key, Hits = kvp.Value })
+            .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .Take(topIpCount)
+            .Select((kvp, idx) => new { Rank = idx + 1, IP = kvp.Key, Hits = kvp.Value })
             .ToList();
 
-        var selectedUris = new HashSet<string>(topUris.Select(x => x.URI), StringComparer.Ordinal);
+        var selectedIps = new HashSet<string>(topIps.Select(x => x.IP), StringComparer.Ordinal);
 
         // Pass 2: only for top IPs, count URI hits by IP.
         var uriCountsByIp = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
@@ -454,52 +455,6 @@ public static class AlbOptions
             {
                 Header = new PanelHeader(
                     $"IP #{group.Ip.Rank}: {Markup.Escape(group.Ip.IP)} ({group.Ip.Hits:N0} hits)"),
-        var topIpsByUri = topUris
-            .Select(uriRow =>
-            {
-                var topIps = uriIpPairCounts
-                    .Where(kvp =>
-                    {
-                        var sep = kvp.Key.IndexOf('\t');
-                        return sep > 0 && string.Equals(kvp.Key[(sep + 1)..], uriRow.URI, StringComparison.Ordinal);
-                    })
-                    .Select(kvp =>
-                    {
-                        var sep = kvp.Key.IndexOf('\t');
-                        return new { IP = kvp.Key[..sep], Hits = kvp.Value };
-                    })
-                    .OrderByDescending(x => x.Hits)
-                    .ThenBy(x => x.IP, StringComparer.Ordinal)
-                    .Take(topIpPerUriCount)
-                    .ToList();
-
-                return new { Uri = uriRow, TopIps = topIps };
-            })
-            .ToList();
-
-        foreach (var group in topIpsByUri)
-        {
-            var ipsTable = TopTable("IP Rank", "Hits", "IP");
-            if (group.TopIps.Count == 0)
-            {
-                ipsTable.AddRow("-", "0", "(no IP matches)");
-            }
-            else
-            {
-                for (int i = 0; i < group.TopIps.Count; i++)
-                {
-                    var row = group.TopIps[i];
-                    ipsTable.AddRow(
-                        (i + 1).ToString(CultureInfo.InvariantCulture),
-                        row.Hits.ToString("N0", CultureInfo.InvariantCulture),
-                        Markup.Escape(row.IP));
-                }
-            }
-
-            AnsiConsole.Write(new Panel(ipsTable)
-            {
-                Header = new PanelHeader(
-                    $"URI #{group.Uri.Rank}: {Markup.Escape(group.Uri.URI)} ({group.Uri.Hits:N0} hits)"),
                 Border = BoxBorder.Rounded
             });
             AnsiConsole.WriteLine();
@@ -530,25 +485,6 @@ public static class AlbOptions
                     var ip = group.Ip.IP.Replace("\"", "\"\"");
                     var uri = row.URI.Replace("\"", "\"\"");
                     swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ip}\",{i + 1},{row.Hits},\"{uri}\"");
-            var outFile = Path.Combine(outputFolder, $"ALB_TopUris_TopIps_ForFragment_{stamp}.csv");
-
-            using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
-            swCsv.WriteLine("UriRank,UriHits,URI,IpRank,IpHits,IP");
-            foreach (var group in topIpsByUri)
-            {
-                if (group.TopIps.Count == 0)
-                {
-                    var onlyUri = group.Uri.URI.Replace("\"", "\"\"");
-                    swCsv.WriteLine($"{group.Uri.Rank},{group.Uri.Hits},\"{onlyUri}\",0,0,\"\"");
-                    continue;
-                }
-
-                for (int i = 0; i < group.TopIps.Count; i++)
-                {
-                    var row = group.TopIps[i];
-                    var uri = group.Uri.URI.Replace("\"", "\"\"");
-                    var ip = row.IP.Replace("\"", "\"\"");
-                    swCsv.WriteLine($"{group.Uri.Rank},{group.Uri.Hits},\"{uri}\",{i + 1},{row.Hits},\"{ip}\"");
                 }
             }
 
