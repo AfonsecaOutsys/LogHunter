@@ -365,11 +365,11 @@ public static class AlbScanner
             reportBytesDelta(remaining);
     }
 
-    public static async Task ScanFileForEndpointUriIpCountsAsync(
+    public static async Task ScanFileForEndpointUriCountsBySelectedIpsAsync(
         string filePath,
         string endpointFragment,
-        HashSet<string> selectedUris,
-        Dictionary<string, int> pairCounts,
+        HashSet<string> selectedIps,
+        Dictionary<string, Dictionary<string, int>> uriCountsByIp,
         Action<long> reportBytesDelta)
     {
         using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1 << 20, FileOptions.SequentialScan);
@@ -388,19 +388,24 @@ public static class AlbScanner
             if (line.IndexOf(endpointFragment, StringComparison.OrdinalIgnoreCase) < 0)
                 continue;
 
-            var uri = ExtractAlbUriNoQuery(line);
-            if (string.IsNullOrEmpty(uri) || !selectedUris.Contains(uri))
-                continue;
-
             var ip = ExtractAlbClientIp(line);
-            if (string.IsNullOrEmpty(ip))
+            if (string.IsNullOrEmpty(ip) || !selectedIps.Contains(ip))
                 continue;
 
-            var key = $"{ip}\t{uri}";
-            if (pairCounts.TryGetValue(key, out var cur))
-                pairCounts[key] = cur + 1;
+            var uri = ExtractAlbUriNoQuery(line);
+            if (string.IsNullOrEmpty(uri))
+                continue;
+
+            if (!uriCountsByIp.TryGetValue(ip, out var uriCounts))
+            {
+                uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+                uriCountsByIp[ip] = uriCounts;
+            }
+
+            if (uriCounts.TryGetValue(uri, out var cur))
+                uriCounts[uri] = cur + 1;
             else
-                pairCounts[key] = 1;
+                uriCounts[uri] = 1;
 
             var pos = fs.Position;
             if (pos - lastReportedPos >= chunk)

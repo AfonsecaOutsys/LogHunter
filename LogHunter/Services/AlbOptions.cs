@@ -415,6 +415,45 @@ public static class AlbOptions
         });
         AnsiConsole.WriteLine();
 
+        var topUrisByIp = topIps
+            .Select(ipRow =>
+            {
+                var topUris = uriCountsByIp.TryGetValue(ipRow.IP, out var uriCounts)
+                    ? uriCounts
+                        .OrderByDescending(x => x.Value)
+                        .ThenBy(x => x.Key, StringComparer.Ordinal)
+                        .Take(topUriPerIpCount)
+                        .Select(x => (URI: x.Key, Hits: x.Value))
+                        .ToList()
+                    : new List<(string URI, int Hits)>();
+
+                return new { Ip = ipRow, TopUris = topUris };
+            })
+            .ToList();
+
+        foreach (var group in topUrisByIp)
+        {
+            var urisTable = TopTable("URI Rank", "Hits", "URI (no query)");
+            if (group.TopUris.Count == 0)
+            {
+                urisTable.AddRow("-", "0", "(no URI matches)");
+            }
+            else
+            {
+                for (int i = 0; i < group.TopUris.Count; i++)
+                {
+                    var row = group.TopUris[i];
+                    urisTable.AddRow(
+                        (i + 1).ToString(CultureInfo.InvariantCulture),
+                        row.Hits.ToString("N0", CultureInfo.InvariantCulture),
+                        Markup.Escape(row.URI));
+                }
+            }
+
+            AnsiConsole.Write(new Panel(urisTable)
+            {
+                Header = new PanelHeader(
+                    $"IP #{group.Ip.Rank}: {Markup.Escape(group.Ip.IP)} ({group.Ip.Hits:N0} hits)"),
         var topIpsByUri = topUris
             .Select(uriRow =>
             {
@@ -471,6 +510,26 @@ public static class AlbOptions
         {
             Directory.CreateDirectory(outputFolder);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var outFile = Path.Combine(outputFolder, $"ALB_TopIps_TopUris_ForFragment_{stamp}.csv");
+
+            using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
+            swCsv.WriteLine("IpRank,IpHits,IP,UriRank,UriHits,URI");
+
+            foreach (var group in topUrisByIp)
+            {
+                if (group.TopUris.Count == 0)
+                {
+                    var ipOnly = group.Ip.IP.Replace("\"", "\"\"");
+                    swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ipOnly}\",0,0,\"\"");
+                    continue;
+                }
+
+                for (int i = 0; i < group.TopUris.Count; i++)
+                {
+                    var row = group.TopUris[i];
+                    var ip = group.Ip.IP.Replace("\"", "\"\"");
+                    var uri = row.URI.Replace("\"", "\"\"");
+                    swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ip}\",{i + 1},{row.Hits},\"{uri}\"");
             var outFile = Path.Combine(outputFolder, $"ALB_TopUris_TopIps_ForFragment_{stamp}.csv");
 
             using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
