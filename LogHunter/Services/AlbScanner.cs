@@ -419,5 +419,4 @@ public static class AlbScanner
         if (remaining > 0)
             reportBytesDelta(remaining);
     }
-
 }
