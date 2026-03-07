@@ -320,7 +320,7 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Top IPs per URI for endpoint/path fragment",
+        ConsoleEx.Header("ALB: Top full paths by IP for endpoint/path fragment",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
@@ -346,32 +346,32 @@ public static class AlbOptions
             return;
         }
 
-        const int topUriCount = 20;
-        const int topIpPerUriCount = 10;
+        const int topIpCount = 20;
+        const int topUriPerIpCount = 10;
 
         InfoPanel("Scan plan",
-            ("Mode", "Top full paths for endpoint fragment (no query)"),
+            ("Mode", "Top IPs for endpoint fragment + top full paths per IP (no query)"),
             ("Endpoint fragment", endpoint),
             ("Passes", "2"),
-            ("Top URIs", topUriCount.ToString(CultureInfo.InvariantCulture)),
-            ("Top IPs per URI", topIpPerUriCount.ToString(CultureInfo.InvariantCulture)),
+            ("Top IPs", topIpCount.ToString(CultureInfo.InvariantCulture)),
+            ("Top URIs per IP", topUriPerIpCount.ToString(CultureInfo.InvariantCulture)),
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
-        var uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var endpointIpCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
-            title: "Scanning ALB logs (pass 1/2: matching full URIs)",
+            title: "Scanning ALB logs (pass 1/2: top IPs for fragment)",
             files: files,
             scanFileAsync: (file, reportDelta) =>
-                AlbScanner.ScanFileForEndpointUriCountsAsync(
+                AlbScanner.ScanFileForEndpointIpCountsAsync(
                     filePath: file,
                     endpointFragment: endpoint,
-                    uriCounts: uriCounts,
+                    ipCounts: endpointIpCounts,
                     reportBytesDelta: reportDelta)
         );
 
-        if (uriCounts.Count == 0)
+        if (endpointIpCounts.Count == 0)
         {
             ConsoleEx.Warn($"No hits found for: {endpoint}");
             ConsoleEx.Pause("Press Enter to return...");
@@ -386,28 +386,31 @@ public static class AlbOptions
 
         var selectedUris = new HashSet<string>(topUris.Select(x => x.URI), StringComparer.Ordinal);
 
-        // Pass 2: only for top URIs, count IPs per URI.
-        var uriIpPairCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Pass 2: only for top IPs, count URI hits by IP.
+        var uriCountsByIp = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
-            title: "Scanning ALB logs (pass 2/2: top IPs per URI)",
+            title: "Scanning ALB logs (pass 2/2: top full paths per top IP)",
             files: files,
             scanFileAsync: (file, reportDelta) =>
-                AlbScanner.ScanFileForEndpointUriIpCountsAsync(
+                AlbScanner.ScanFileForEndpointUriCountsBySelectedIpsAsync(
                     filePath: file,
                     endpointFragment: endpoint,
-                    selectedUris: selectedUris,
-                    pairCounts: uriIpPairCounts,
+                    selectedIps: selectedIps,
+                    uriCountsByIp: uriCountsByIp,
                     reportBytesDelta: reportDelta)
         );
 
-        var topUrisTable = TopTable("URI Rank", "Hits", "URI (no query)");
-        foreach (var row in topUris)
-            topUrisTable.AddRow(row.Rank.ToString(CultureInfo.InvariantCulture), row.Hits.ToString("N0", CultureInfo.InvariantCulture), Markup.Escape(row.URI));
+        var topIpsTable = TopTable("IP Rank", "Hits", "IP");
+        foreach (var row in topIps)
+            topIpsTable.AddRow(
+                row.Rank.ToString(CultureInfo.InvariantCulture),
+                row.Hits.ToString("N0", CultureInfo.InvariantCulture),
+                Markup.Escape(row.IP));
 
-        AnsiConsole.Write(new Panel(topUrisTable)
+        AnsiConsole.Write(new Panel(topIpsTable)
         {
-            Header = new PanelHeader($"Top full paths for: {Markup.Escape(endpoint)} (max 50)"),
+            Header = new PanelHeader($"Top IPs matching fragment: {Markup.Escape(endpoint)} (max {topIpCount})"),
             Border = BoxBorder.Rounded
         });
         AnsiConsole.WriteLine();
