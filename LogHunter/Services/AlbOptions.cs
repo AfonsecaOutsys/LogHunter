@@ -320,7 +320,7 @@ public static class AlbOptions
         var albFolder = AppFolders.ALB;
         var outputFolder = AppFolders.Output;
 
-        ConsoleEx.Header("ALB: Top IPs per URI for endpoint/path fragment",
+        ConsoleEx.Header("ALB: Top full paths by IP for endpoint/path fragment",
             $"Reading logs from: {albFolder}");
 
         if (!Directory.Exists(albFolder))
@@ -346,87 +346,146 @@ public static class AlbOptions
             return;
         }
 
-        const int topUriCount = 20;
-        const int topIpPerUriCount = 10;
+        const int topIpCount = 20;
+        const int topUriPerIpCount = 10;
 
         InfoPanel("Scan plan",
-            ("Mode", "Top full paths for endpoint fragment (no query)"),
+            ("Mode", "Top IPs for endpoint fragment + top full paths per IP (no query)"),
             ("Endpoint fragment", endpoint),
             ("Passes", "2"),
-            ("Top URIs", topUriCount.ToString(CultureInfo.InvariantCulture)),
-            ("Top IPs per URI", topIpPerUriCount.ToString(CultureInfo.InvariantCulture)),
+            ("Top IPs", topIpCount.ToString(CultureInfo.InvariantCulture)),
+            ("Top URIs per IP", topUriPerIpCount.ToString(CultureInfo.InvariantCulture)),
             ("Files", files.Count.ToString("N0")),
             ("Input", albFolder));
 
-        var uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var endpointIpCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
-            title: "Scanning ALB logs (pass 1/2: matching full URIs)",
+            title: "Scanning ALB logs (pass 1/2: top IPs for fragment)",
             files: files,
             scanFileAsync: (file, reportDelta) =>
-                AlbScanner.ScanFileForEndpointUriCountsAsync(
+                AlbScanner.ScanFileForEndpointIpCountsAsync(
                     filePath: file,
                     endpointFragment: endpoint,
-                    uriCounts: uriCounts,
+                    ipCounts: endpointIpCounts,
                     reportBytesDelta: reportDelta)
         );
 
-        if (uriCounts.Count == 0)
+        if (endpointIpCounts.Count == 0)
         {
             ConsoleEx.Warn($"No hits found for: {endpoint}");
             ConsoleEx.Pause("Press Enter to return...");
             return;
         }
 
-        var top = uriCounts
+        var topIps = endpointIpCounts
             .OrderByDescending(kvp => kvp.Value)
-            .Take(50)
-            .Select((kvp, idx) => new { Rank = idx + 1, URI = kvp.Key, Hits = kvp.Value })
+            .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .Take(topIpCount)
+            .Select((kvp, idx) => new { Rank = idx + 1, IP = kvp.Key, Hits = kvp.Value })
             .ToList();
 
-        var table = TopTable("Rank", "Hits", "URI (no query)");
-        foreach (var row in top)
-            table.AddRow(row.Rank.ToString(), row.Hits.ToString("N0"), Markup.Escape(row.URI));
+        var selectedIps = new HashSet<string>(topIps.Select(x => x.IP), StringComparer.Ordinal);
 
-        // Pass 2: only for top URIs, count IPs per URI.
-        var uriIpPairCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Pass 2: only for top IPs, count URI hits by IP.
+        var uriCountsByIp = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
 
         await RunScanWithProgressAsync(
-            title: "Scanning ALB logs (pass 2/2: top IPs per URI)",
+            title: "Scanning ALB logs (pass 2/2: top full paths per top IP)",
             files: files,
             scanFileAsync: (file, reportDelta) =>
-                AlbScanner.ScanFileForEndpointUriIpCountsAsync(
+                AlbScanner.ScanFileForEndpointUriCountsBySelectedIpsAsync(
                     filePath: file,
                     endpointFragment: endpoint,
-                    selectedUris: selectedUris,
-                    pairCounts: uriIpPairCounts,
+                    selectedIps: selectedIps,
+                    uriCountsByIp: uriCountsByIp,
                     reportBytesDelta: reportDelta)
         );
 
-        var topUrisTable = TopTable("URI Rank", "Hits", "URI (no query)");
-        foreach (var row in topUris)
-            topUrisTable.AddRow(row.Rank.ToString(CultureInfo.InvariantCulture), row.Hits.ToString("N0", CultureInfo.InvariantCulture), Markup.Escape(row.URI));
+        var topIpsTable = TopTable("IP Rank", "Hits", "IP");
+        foreach (var row in topIps)
+            topIpsTable.AddRow(
+                row.Rank.ToString(CultureInfo.InvariantCulture),
+                row.Hits.ToString("N0", CultureInfo.InvariantCulture),
+                Markup.Escape(row.IP));
 
-        AnsiConsole.Write(new Panel(topUrisTable)
+        AnsiConsole.Write(new Panel(topIpsTable)
         {
-            Header = new PanelHeader($"Top full paths for: {Markup.Escape(endpoint)} (max 50)"),
+            Header = new PanelHeader($"Top IPs matching fragment: {Markup.Escape(endpoint)} (max {topIpCount})"),
             Border = BoxBorder.Rounded
         });
         AnsiConsole.WriteLine();
+
+        var topUrisByIp = topIps
+            .Select(ipRow =>
+            {
+                var topUris = uriCountsByIp.TryGetValue(ipRow.IP, out var uriCounts)
+                    ? uriCounts
+                        .OrderByDescending(x => x.Value)
+                        .ThenBy(x => x.Key, StringComparer.Ordinal)
+                        .Take(topUriPerIpCount)
+                        .Select(x => (URI: x.Key, Hits: x.Value))
+                        .ToList()
+                    : new List<(string URI, int Hits)>();
+
+                return new { Ip = ipRow, TopUris = topUris };
+            })
+            .ToList();
+
+        foreach (var group in topUrisByIp)
+        {
+            var urisTable = TopTable("URI Rank", "Hits", "URI (no query)");
+            if (group.TopUris.Count == 0)
+            {
+                urisTable.AddRow("-", "0", "(no URI matches)");
+            }
+            else
+            {
+                for (int i = 0; i < group.TopUris.Count; i++)
+                {
+                    var row = group.TopUris[i];
+                    urisTable.AddRow(
+                        (i + 1).ToString(CultureInfo.InvariantCulture),
+                        row.Hits.ToString("N0", CultureInfo.InvariantCulture),
+                        Markup.Escape(row.URI));
+                }
+            }
+
+            AnsiConsole.Write(new Panel(urisTable)
+            {
+                Header = new PanelHeader(
+                    $"IP #{group.Ip.Rank}: {Markup.Escape(group.Ip.IP)} ({group.Ip.Hits:N0} hits)"),
+                Border = BoxBorder.Rounded
+            });
+            AnsiConsole.WriteLine();
+        }
 
         var doExport = ConsoleEx.ReadYesNo("Export these results now?", defaultYes: true);
         if (doExport)
         {
             Directory.CreateDirectory(outputFolder);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var outFile = Path.Combine(outputFolder, $"ALB_Top50_FullPaths_ForFragment_{stamp}.csv");
+            var outFile = Path.Combine(outputFolder, $"ALB_TopIps_TopUris_ForFragment_{stamp}.csv");
 
             using var swCsv = new StreamWriter(outFile, false, Encoding.UTF8);
-            swCsv.WriteLine("Rank,Hits,URI");
-            foreach (var row in top)
+            swCsv.WriteLine("IpRank,IpHits,IP,UriRank,UriHits,URI");
+
+            foreach (var group in topUrisByIp)
             {
-                var uri = row.URI.Replace("\"", "\"\"");
-                swCsv.WriteLine($"{row.Rank},{row.Hits},\"{uri}\"");
+                if (group.TopUris.Count == 0)
+                {
+                    var ipOnly = group.Ip.IP.Replace("\"", "\"\"");
+                    swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ipOnly}\",0,0,\"\"");
+                    continue;
+                }
+
+                for (int i = 0; i < group.TopUris.Count; i++)
+                {
+                    var row = group.TopUris[i];
+                    var ip = group.Ip.IP.Replace("\"", "\"\"");
+                    var uri = row.URI.Replace("\"", "\"\"");
+                    swCsv.WriteLine($"{group.Ip.Rank},{group.Ip.Hits},\"{ip}\",{i + 1},{row.Hits},\"{uri}\"");
+                }
             }
 
             ConsoleEx.Success($"Exported: {outFile}");
