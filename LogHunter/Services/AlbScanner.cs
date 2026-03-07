@@ -365,11 +365,11 @@ public static class AlbScanner
             reportBytesDelta(remaining);
     }
 
-    public static async Task ScanFileForEndpointUriCountsBySelectedIpsAsync(
+    public static async Task ScanFileForEndpointUriIpCountsAsync(
         string filePath,
         string endpointFragment,
-        HashSet<string> selectedIps,
-        Dictionary<string, Dictionary<string, int>> uriCountsByIp,
+        HashSet<string> selectedUris,
+        Dictionary<string, int> pairCounts,
         Action<long> reportBytesDelta)
     {
         using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1 << 20, FileOptions.SequentialScan);
@@ -388,24 +388,19 @@ public static class AlbScanner
             if (line.IndexOf(endpointFragment, StringComparison.OrdinalIgnoreCase) < 0)
                 continue;
 
-            var ip = ExtractAlbClientIp(line);
-            if (string.IsNullOrEmpty(ip) || !selectedIps.Contains(ip))
-                continue;
-
             var uri = ExtractAlbUriNoQuery(line);
-            if (string.IsNullOrEmpty(uri))
+            if (string.IsNullOrEmpty(uri) || !selectedUris.Contains(uri))
                 continue;
 
-            if (!uriCountsByIp.TryGetValue(ip, out var uriCounts))
-            {
-                uriCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-                uriCountsByIp[ip] = uriCounts;
-            }
+            var ip = ExtractAlbClientIp(line);
+            if (string.IsNullOrEmpty(ip))
+                continue;
 
-            if (uriCounts.TryGetValue(uri, out var cur))
-                uriCounts[uri] = cur + 1;
+            var key = $"{ip}\t{uri}";
+            if (pairCounts.TryGetValue(key, out var cur))
+                pairCounts[key] = cur + 1;
             else
-                uriCounts[uri] = 1;
+                pairCounts[key] = 1;
 
             var pos = fs.Position;
             if (pos - lastReportedPos >= chunk)
@@ -419,5 +414,4 @@ public static class AlbScanner
         if (remaining > 0)
             reportBytesDelta(remaining);
     }
-
 }
